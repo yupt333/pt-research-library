@@ -216,3 +216,29 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# PT Research Library: macOS metadata
+.DS_Store
+
+# PT Research Library: database files
+*.db
+*.sqlite
+*.sqlite3
+
+# PT Research Library: research files
+*.pdf
+*.mp4
+*.mov
+*.avi
+*.dcm
+
+# PT Research Library: generated output and backups
+exports/*
+!exports/.gitkeep
+backups/*
+!backups/.gitkeep
+data/*
+!data/.gitkeep
+
+# PT Research Library: secrets
+*.key
