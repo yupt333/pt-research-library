@@ -76,6 +76,22 @@ class LiteratureRepositoryTestCase(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     add_literature(self.connection, Literature(title=title))
 
+    def test_literature_accepts_valid_ratings(self) -> None:
+        for rating in (None, 1, 5):
+            with self.subTest(rating=rating):
+                literature = Literature(title="Valid rating", rating=rating)
+
+                self.assertEqual(literature.rating, rating)
+
+    def test_literature_rejects_invalid_ratings(self) -> None:
+        for rating in (0, 6, 1.5, "1", True, False):
+            with self.subTest(rating=repr(rating)):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "ratingはNoneまたは1〜5の整数",
+                ):
+                    Literature(title="Invalid rating", rating=rating)
+
     def test_get_literature_returns_none_for_unknown_id(self) -> None:
         self.assertIsNone(get_literature(self.connection, 999999))
 

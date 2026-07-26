@@ -9,6 +9,8 @@ DatabasePath = Union[str, Path]
 
 
 SCHEMA_SQL = """
+BEGIN;
+
 CREATE TABLE IF NOT EXISTS literature (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL CHECK (length(trim(title)) > 0),
@@ -41,7 +43,11 @@ CREATE TABLE IF NOT EXISTS literature (
     adoption_status TEXT NOT NULL DEFAULT '未判定'
         CHECK (adoption_status IN ('未判定', '採用候補', '採用', '除外')),
     exclusion_reason TEXT,
-    rating INTEGER DEFAULT NULL CHECK (rating IS NULL OR rating BETWEEN 1 AND 5),
+    rating INTEGER DEFAULT NULL
+        CHECK (
+            rating IS NULL
+            OR (typeof(rating) = 'integer' AND rating BETWEEN 1 AND 5)
+        ),
     created_at TEXT NOT NULL
         DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at TEXT NOT NULL
@@ -73,6 +79,8 @@ CREATE TABLE IF NOT EXISTS usage_history (
         DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     FOREIGN KEY (literature_id) REFERENCES literature(id) ON DELETE CASCADE
 );
+
+COMMIT;
 """
 
 
@@ -88,7 +96,9 @@ def initialize_database(database_path: DatabasePath) -> None:
     """Create the Phase 1 tables without removing or replacing existing data."""
     connection = connect_database(database_path)
     try:
-        with connection:
-            connection.executescript(SCHEMA_SQL)
+        connection.executescript(SCHEMA_SQL)
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()

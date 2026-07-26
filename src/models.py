@@ -43,3 +43,12 @@ class Literature:
     def __post_init__(self) -> None:
         if not isinstance(self.title, str) or not self.title.strip():
             raise ValueError("タイトルは必須です。")
+        if self.rating is not None and (
+            isinstance(self.rating, bool)
+            or not isinstance(self.rating, int)
+            or not 1 <= self.rating <= 5
+        ):
+            raise ValueError(
+                "ratingはNoneまたは1〜5の整数で指定してください。"
+                f"受け取った値: {self.rating!r}"
+            )
