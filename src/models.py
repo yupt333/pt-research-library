@@ -52,3 +52,24 @@ class Literature:
                 "ratingはNoneまたは1〜5の整数で指定してください。"
                 f"受け取った値: {self.rating!r}"
             )
+
+
+@dataclass
+class Tag:
+    """A tag record matching the fields in the tags table."""
+
+    name: str
+    id: Optional[int] = None
+
+
+@dataclass
+class UsageHistory:
+    """A usage-history record matching the fields in the usage_history table."""
+
+    literature_id: int
+    usage_type: Optional[str]
+    id: Optional[int] = None
+    project_name: Optional[str] = None
+    usage_note: Optional[str] = None
+    used_at: Optional[str] = None
+    created_at: Optional[str] = None

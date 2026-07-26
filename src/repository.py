@@ -1,10 +1,11 @@
-"""Minimal persistence operations for literature records."""
+"""Persistence operations for literature, tags, and usage history."""
 
+import re
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Mapping, Optional
 
-from src.models import Literature
+from src.models import Literature, Tag, UsageHistory
 
 
 _LITERATURE_COLUMNS = (
@@ -40,11 +41,82 @@ _LITERATURE_COLUMNS = (
 
 _SELECT_COLUMNS = ("id",) + _LITERATURE_COLUMNS + ("created_at", "updated_at")
 _UPDATABLE_LITERATURE_COLUMNS = frozenset(_LITERATURE_COLUMNS)
+_TAG_SELECT_COLUMNS = ("id", "name")
+_USAGE_HISTORY_COLUMNS = (
+    "literature_id",
+    "usage_type",
+    "project_name",
+    "usage_note",
+    "used_at",
+)
+_USAGE_HISTORY_SELECT_COLUMNS = (
+    ("id",) + _USAGE_HISTORY_COLUMNS + ("created_at",)
+)
+_UPDATABLE_USAGE_HISTORY_COLUMNS = frozenset(
+    ("usage_type", "project_name", "usage_note", "used_at")
+)
+_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 
 
 def _row_to_literature(row: sqlite3.Row) -> Literature:
     """Convert a literature table row to the repository's model."""
     return Literature(**dict(row))
+
+
+def _row_to_tag(row: sqlite3.Row) -> Tag:
+    """Convert a tags table row to the repository's model."""
+    return Tag(**dict(row))
+
+
+def _row_to_usage_history(row: sqlite3.Row) -> UsageHistory:
+    """Convert a usage_history table row to the repository's model."""
+    return UsageHistory(**dict(row))
+
+
+def _normalize_tag_name(name: object) -> str:
+    """Validate and trim a tag name."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("タグ名は空でない文字列で指定してください。")
+    return name.strip()
+
+
+def _normalize_usage_type(usage_type: object) -> str:
+    """Validate and trim a usage type."""
+    if not isinstance(usage_type, str) or not usage_type.strip():
+        raise ValueError("usage_typeは空でない文字列で指定してください。")
+    return usage_type.strip()
+
+
+def _validate_optional_text(field_name: str, value: object) -> Optional[str]:
+    """Validate a nullable text value without changing its contents."""
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"{field_name}はNoneまたは文字列で指定してください。")
+    return value
+
+
+def _validate_used_at(value: object) -> Optional[str]:
+    """Validate a nullable date in exact YYYY-MM-DD form."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or _DATE_PATTERN.fullmatch(value) is None:
+        raise ValueError("used_atはNoneまたはYYYY-MM-DD形式で指定してください。")
+    try:
+        date.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError("used_atには実在する日付を指定してください。") from error
+    return value
+
+
+def _is_sqlite_constraint(
+    error: sqlite3.IntegrityError,
+    error_code: int,
+    error_name: str,
+) -> bool:
+    """Return whether an integrity error is one expected SQLite constraint."""
+    return (
+        getattr(error, "sqlite_errorcode", None) == error_code
+        or getattr(error, "sqlite_errorname", None) == error_name
+    )
 
 
 def _utc_now() -> datetime:
@@ -190,5 +262,308 @@ def delete_literature(
         cursor = connection.execute(
             "DELETE FROM literature WHERE id = ?",
             (literature_id,),
+        )
+    return cursor.rowcount == 1
+
+
+def create_tag(connection: sqlite3.Connection, name: object) -> int:
+    """Create a tag, or return the matching case-insensitive tag ID."""
+    normalized_name = _normalize_tag_name(name)
+
+    with connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO tags (name)
+            VALUES (?)
+            ON CONFLICT DO NOTHING
+            """,
+            (normalized_name,),
+        )
+        if cursor.rowcount == 1:
+            if cursor.lastrowid is None:
+                raise RuntimeError("タグIDを取得できませんでした。")
+            return cursor.lastrowid
+
+        row = connection.execute(
+            "SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
+            (normalized_name,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("既存タグのIDを取得できませんでした。")
+        return row["id"]
+
+
+def get_tag(
+    connection: sqlite3.Connection, tag_id: int
+) -> Optional[Tag]:
+    """Return one tag, or None when the ID does not exist."""
+    columns = ", ".join(_TAG_SELECT_COLUMNS)
+    row = connection.execute(
+        f"SELECT {columns} FROM tags WHERE id = ?",
+        (tag_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_tag(row)
+
+
+def list_tags(connection: sqlite3.Connection) -> list[Tag]:
+    """Return all tags in deterministic case-insensitive name order."""
+    columns = ", ".join(_TAG_SELECT_COLUMNS)
+    rows = connection.execute(
+        f"""
+        SELECT {columns}
+        FROM tags
+        ORDER BY name COLLATE NOCASE ASC, id ASC
+        """
+    ).fetchall()
+    return [_row_to_tag(row) for row in rows]
+
+
+def list_tags_for_literature(
+    connection: sqlite3.Connection, literature_id: int
+) -> Optional[list[Tag]]:
+    """Return attached tags, or None when the literature ID is unknown."""
+    columns = ", ".join(f"tags.{column}" for column in _TAG_SELECT_COLUMNS)
+    rows = connection.execute(
+        f"""
+        SELECT {columns}
+        FROM literature
+        LEFT JOIN literature_tags
+            ON literature_tags.literature_id = literature.id
+        LEFT JOIN tags
+            ON tags.id = literature_tags.tag_id
+        WHERE literature.id = ?
+        ORDER BY tags.name COLLATE NOCASE ASC, tags.id ASC
+        """,
+        (literature_id,),
+    ).fetchall()
+    if not rows:
+        return None
+    if rows[0]["id"] is None:
+        return []
+    return [_row_to_tag(row) for row in rows]
+
+
+def rename_tag(
+    connection: sqlite3.Connection,
+    tag_id: int,
+    new_name: object,
+) -> bool:
+    """Rename one tag while preserving its ID and relationships."""
+    normalized_name = _normalize_tag_name(new_name)
+
+    try:
+        with connection:
+            cursor = connection.execute(
+                "UPDATE tags SET name = ? WHERE id = ?",
+                (normalized_name, tag_id),
+            )
+    except sqlite3.IntegrityError as error:
+        if _is_sqlite_constraint(
+            error,
+            sqlite3.SQLITE_CONSTRAINT_UNIQUE,
+            "SQLITE_CONSTRAINT_UNIQUE",
+        ):
+            raise ValueError(
+                "同じ名前のタグが大文字・小文字を区別せず既に存在します。"
+            ) from error
+        raise
+    return cursor.rowcount == 1
+
+
+def delete_tag(connection: sqlite3.Connection, tag_id: int) -> bool:
+    """Delete one tag and its relationships, but not literature records."""
+    with connection:
+        cursor = connection.execute(
+            "DELETE FROM tags WHERE id = ?",
+            (tag_id,),
+        )
+    return cursor.rowcount == 1
+
+
+def attach_tag_to_literature(
+    connection: sqlite3.Connection,
+    literature_id: int,
+    tag_id: int,
+) -> bool:
+    """Attach a tag once when both referenced records exist."""
+    try:
+        with connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO literature_tags (literature_id, tag_id)
+                VALUES (?, ?)
+                ON CONFLICT(literature_id, tag_id) DO NOTHING
+                """,
+                (literature_id, tag_id),
+            )
+    except sqlite3.IntegrityError as error:
+        if _is_sqlite_constraint(
+            error,
+            sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY,
+            "SQLITE_CONSTRAINT_FOREIGNKEY",
+        ):
+            raise ValueError(
+                "literature_idまたはtag_idが存在しません。"
+            ) from error
+        raise
+    return cursor.rowcount == 1
+
+
+def detach_tag_from_literature(
+    connection: sqlite3.Connection,
+    literature_id: int,
+    tag_id: int,
+) -> bool:
+    """Detach one tag relationship without deleting either parent record."""
+    with connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM literature_tags
+            WHERE literature_id = ? AND tag_id = ?
+            """,
+            (literature_id, tag_id),
+        )
+    return cursor.rowcount == 1
+
+
+def create_usage_history(
+    connection: sqlite3.Connection,
+    literature_id: int,
+    usage_type: object,
+    project_name: object = None,
+    usage_note: object = None,
+    used_at: object = None,
+) -> int:
+    """Create one usage-history record and return its generated ID."""
+    normalized_usage_type = _normalize_usage_type(usage_type)
+    validated_project_name = _validate_optional_text(
+        "project_name", project_name
+    )
+    validated_usage_note = _validate_optional_text("usage_note", usage_note)
+    validated_used_at = _validate_used_at(used_at)
+
+    try:
+        with connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO usage_history (
+                    literature_id,
+                    usage_type,
+                    project_name,
+                    usage_note,
+                    used_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    literature_id,
+                    normalized_usage_type,
+                    validated_project_name,
+                    validated_usage_note,
+                    validated_used_at,
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("使用履歴IDを取得できませんでした。")
+    except sqlite3.IntegrityError as error:
+        if _is_sqlite_constraint(
+            error,
+            sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY,
+            "SQLITE_CONSTRAINT_FOREIGNKEY",
+        ):
+            raise ValueError(
+                f"文献ID {literature_id!r} は存在しません。"
+            ) from error
+        raise
+    return cursor.lastrowid
+
+
+def get_usage_history(
+    connection: sqlite3.Connection,
+    usage_history_id: int,
+) -> Optional[UsageHistory]:
+    """Return one usage-history record, or None when its ID is unknown."""
+    columns = ", ".join(_USAGE_HISTORY_SELECT_COLUMNS)
+    row = connection.execute(
+        f"SELECT {columns} FROM usage_history WHERE id = ?",
+        (usage_history_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_usage_history(row)
+
+
+def list_usage_history_for_literature(
+    connection: sqlite3.Connection,
+    literature_id: int,
+) -> Optional[list[UsageHistory]]:
+    """Return one literature record's history, or None for unknown literature."""
+    literature_exists = connection.execute(
+        "SELECT 1 FROM literature WHERE id = ?",
+        (literature_id,),
+    ).fetchone()
+    if literature_exists is None:
+        return None
+
+    columns = ", ".join(_USAGE_HISTORY_SELECT_COLUMNS)
+    rows = connection.execute(
+        f"""
+        SELECT {columns}
+        FROM usage_history
+        WHERE literature_id = ?
+        ORDER BY id ASC
+        """,
+        (literature_id,),
+    ).fetchall()
+    return [_row_to_usage_history(row) for row in rows]
+
+
+def update_usage_history(
+    connection: sqlite3.Connection,
+    usage_history_id: int,
+    updates: Mapping[str, object],
+) -> bool:
+    """Partially update editable usage-history fields."""
+    if not updates:
+        raise ValueError("更新対象を1項目以上指定してください。")
+
+    invalid_columns = set(updates) - _UPDATABLE_USAGE_HISTORY_COLUMNS
+    if invalid_columns:
+        invalid_names = ", ".join(
+            sorted(repr(column) for column in invalid_columns)
+        )
+        raise ValueError(f"更新できない項目が指定されました: {invalid_names}")
+
+    validated_updates: dict[str, object] = {}
+    for column, value in updates.items():
+        if column == "usage_type":
+            validated_updates[column] = _normalize_usage_type(value)
+        elif column == "used_at":
+            validated_updates[column] = _validate_used_at(value)
+        else:
+            validated_updates[column] = _validate_optional_text(column, value)
+
+    update_columns = tuple(validated_updates)
+    assignments = ", ".join(f"{column} = ?" for column in update_columns)
+    values = tuple(validated_updates[column] for column in update_columns)
+    with connection:
+        cursor = connection.execute(
+            f"UPDATE usage_history SET {assignments} WHERE id = ?",
+            values + (usage_history_id,),
+        )
+    return cursor.rowcount == 1
+
+
+def delete_usage_history(
+    connection: sqlite3.Connection,
+    usage_history_id: int,
+) -> bool:
+    """Delete exactly one usage-history row when it exists."""
+    with connection:
+        cursor = connection.execute(
+            "DELETE FROM usage_history WHERE id = ?",
+            (usage_history_id,),
         )
     return cursor.rowcount == 1
