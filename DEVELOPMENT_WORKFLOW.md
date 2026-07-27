@@ -94,22 +94,19 @@ Out of scope unless separately approved:
 
 ### Step 4: Search and filtering
 
-Status: in progress
+Status: completed and pushed
 
-Planned scope:
+Includes:
 
-- keyword search
-- year filter
-- tag filter
-- publication_type filter
-- verification_status filter
-- adoption_status filter
-- ai_summary_status filter
-- rating filter
-- usage_type filter
-- deterministic result ordering
+- keyword search across literature, tags, and usage history
+- year, tag, publication_type, status, rating, and usage_type filters
+- input validation and literal handling of LIKE metacharacters
+- read-only transaction preservation
+- deterministic result ordering by literature ID
 
 ### Step 5: Duplicate-candidate detection
+
+Status: in progress
 
 Planned scope:
 
