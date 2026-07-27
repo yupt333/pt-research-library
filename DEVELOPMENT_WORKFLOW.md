@@ -68,7 +68,9 @@ Includes:
 
 ### Step 3: Tag and usage-history operations
 
-Planned scope:
+Status: completed and pushed
+
+Includes:
 
 - tag creation
 - tag listing
@@ -91,6 +93,8 @@ Out of scope unless separately approved:
 - external APIs
 
 ### Step 4: Search and filtering
+
+Status: in progress
 
 Planned scope:
 
