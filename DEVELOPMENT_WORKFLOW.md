@@ -106,9 +106,9 @@ Includes:
 
 ### Step 5: Duplicate-candidate detection
 
-Status: in progress
+Status: completed and pushed
 
-Planned scope:
+Includes:
 
 - DOI normalization
 - PMID normalization
@@ -117,10 +117,15 @@ Planned scope:
 - title similarity using difflib.SequenceMatcher
 - similarity threshold constant
 - candidate presentation
+- deterministic candidate ordering
+- read-only transaction preservation
+- invalid stored-value isolation
 - no automatic merge
 - no automatic deletion
 
 ### Step 6: CSV export
+
+Status: in progress
 
 Planned scope:
 
@@ -131,7 +136,8 @@ Planned scope:
 - export all literature
 - export current results
 - exclude usage-history rows
-- output only to exports/
+- core CSV export API accepts an explicit output file path whose parent exists
+- Phase 1 CLI will use exports/ as the default export location
 
 ### Step 7: SQLite backup
 
