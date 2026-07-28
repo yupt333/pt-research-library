@@ -141,17 +141,24 @@ Includes:
 
 ### Step 7: SQLite backup
 
-Status: in progress
+Status: completed and pushed
 
-Planned scope:
+Includes:
 
-- copy only the SQLite database
-- timestamped backup filename
-- output only to backups/
-- do not upload backups to GitHub
-- preserve the source database
+- SQLite `Connection.backup()` database copy
+- verified temporary backup using `PRAGMA quick_check`
+- UTC timestamped, collision-safe backup filenames
+- atomic publication without overwriting existing backups
+- explicit existing backup-directory input
+- source database and transaction preservation
 
 ### Step 8: Interactive CLI
+
+Status: in progress
+
+Current sub-step:
+
+- Step 8A: CLI foundation, literature list, and search
 
 Planned scope:
 
