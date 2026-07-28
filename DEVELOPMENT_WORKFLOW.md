@@ -125,9 +125,9 @@ Includes:
 
 ### Step 6: CSV export
 
-Status: in progress
+Status: completed and pushed
 
-Planned scope:
+Includes:
 
 - one literature record per row
 - all literature columns
@@ -140,6 +140,8 @@ Planned scope:
 - Phase 1 CLI will use exports/ as the default export location
 
 ### Step 7: SQLite backup
+
+Status: in progress
 
 Planned scope:
 
