@@ -3,12 +3,14 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import patch
 
 import src.repository as repository_module
 from src.database import connect_database, initialize_database
+from src.duplicates import normalize_doi, normalize_pmid
 from src.models import Literature
 from src.repository import (
     add_literature,
@@ -78,6 +80,26 @@ class LiteratureRepositoryTestCase(unittest.TestCase):
         )
         self.connection.commit()
 
+    def insert_legacy_literature(
+        self,
+        title: str,
+        *,
+        doi: object = None,
+        pmid: object = None,
+    ) -> int:
+        """Insert historical identifier forms without the repository write path."""
+        cursor = self.connection.execute(
+            """
+            INSERT INTO literature (title, doi, pmid)
+            VALUES (?, ?, ?)
+            """,
+            (title, doi, pmid),
+        )
+        self.connection.commit()
+        self.assertIsNotNone(cursor.lastrowid)
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
     def assert_utc_timestamp(self, timestamp: str) -> datetime:
         self.assertTrue(timestamp.endswith("Z"))
         parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -134,6 +156,276 @@ class LiteratureRepositoryTestCase(unittest.TestCase):
             assert timestamp is not None
             parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
             self.assertEqual(parsed.utcoffset(), timezone.utc.utcoffset(parsed))
+
+    def test_add_accepts_publication_year_boundaries_and_none(self) -> None:
+        current_year = date.today().year
+
+        for publication_year in (None, 1800, current_year, current_year + 1):
+            with self.subTest(publication_year=publication_year):
+                literature_id = add_literature(
+                    self.connection,
+                    Literature(
+                        title=f"Valid year {publication_year!r}",
+                        publication_year=publication_year,
+                    ),
+                )
+                stored = get_literature(self.connection, literature_id)
+                self.assertIsNotNone(stored)
+                assert stored is not None
+                self.assertEqual(stored.publication_year, publication_year)
+
+    def test_add_rejects_invalid_publication_year_before_sql(self) -> None:
+        fixed_today = date(2026, 12, 31)
+        maximum_year = fixed_today.year + 1
+
+        class FixedDate(date):
+            @classmethod
+            def today(cls) -> date:
+                return fixed_today
+
+        invalid_values = (
+            1799,
+            fixed_today.year + 2,
+            True,
+            False,
+            2025.0,
+            "2025",
+            [],
+        )
+
+        for publication_year in invalid_values:
+            with self.subTest(publication_year=repr(publication_year)):
+                statements: list[str] = []
+                self.connection.set_trace_callback(statements.append)
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        rf"publication_year.*1800〜{maximum_year}",
+                    ):
+                        with patch.object(repository_module, "date", FixedDate):
+                            add_literature(
+                                self.connection,
+                                Literature(
+                                    title="Invalid publication year",
+                                    publication_year=publication_year,  # type: ignore[arg-type]
+                                ),
+                            )
+                finally:
+                    self.connection.set_trace_callback(None)
+
+                self.assertEqual(statements, [])
+                self.assertEqual(
+                    self.connection.execute(
+                        "SELECT COUNT(*) FROM literature"
+                    ).fetchone()[0],
+                    0,
+                )
+                self.assertEqual(
+                    self.connection.execute("SELECT 1").fetchone()[0],
+                    1,
+                )
+
+    def test_add_accepts_every_literature_status_value(self) -> None:
+        status_values = {
+            "ai_summary_status": ("未作成", "未確認", "確認済み", "修正済み"),
+            "verification_status": ("未確認", "一部確認", "確認済み", "要確認"),
+            "adoption_status": ("未判定", "採用候補", "採用", "除外"),
+        }
+
+        for field_name, allowed_values in status_values.items():
+            for value in allowed_values:
+                with self.subTest(field=field_name, value=value):
+                    literature_id = add_literature(
+                        self.connection,
+                        Literature(
+                            title=f"{field_name} {value}",
+                            **{field_name: value},
+                        ),
+                    )
+                    stored = get_literature(self.connection, literature_id)
+                    self.assertIsNotNone(stored)
+                    assert stored is not None
+                    self.assertEqual(getattr(stored, field_name), value)
+
+    def test_add_rejects_invalid_literature_statuses_before_sql(self) -> None:
+        status_values = {
+            "ai_summary_status": ("未作成", "未確認", "確認済み", "修正済み"),
+            "verification_status": ("未確認", "一部確認", "確認済み", "要確認"),
+            "adoption_status": ("未判定", "採用候補", "採用", "除外"),
+        }
+
+        for field_name, allowed_values in status_values.items():
+            invalid_values = (
+                "不正",
+                None,
+                f" {allowed_values[0]} ",
+                1,
+                True,
+            )
+            for value in invalid_values:
+                with self.subTest(field=field_name, value=repr(value)):
+                    statements: list[str] = []
+                    self.connection.set_trace_callback(statements.append)
+                    try:
+                        with self.assertRaises(ValueError) as raised:
+                            add_literature(
+                                self.connection,
+                                Literature(
+                                    title="Invalid literature status",
+                                    **{field_name: value},
+                                ),
+                            )
+                    finally:
+                        self.connection.set_trace_callback(None)
+
+                    message = str(raised.exception)
+                    self.assertIn(field_name, message)
+                    for allowed_value in allowed_values:
+                        self.assertIn(allowed_value, message)
+                    self.assertEqual(statements, [])
+
+    def test_add_normalizes_doi_without_mutating_input(self) -> None:
+        doi_values = (
+            "10.1000/Example",
+            "doi:10.1000/Example",
+            "https://doi.org/10.1000/Example",
+            "http://doi.org/10.1000/Example",
+            "https://dx.doi.org/10.1000/Example",
+            "http://dx.doi.org/10.1000/Example",
+            " DOI:10.ABC/Mixed Case ",
+            "ＨＴＴＰＳ：／／ＤＯＩ．ＯＲＧ／１０．ＡＢＣ／Ｅｘａｍｐｌｅ",
+            "",
+            " \t\n",
+            None,
+        )
+
+        for doi in doi_values:
+            with self.subTest(doi=repr(doi)):
+                literature = Literature(title=f"DOI {doi!r}", doi=doi)
+                before = vars(literature).copy()
+
+                literature_id = add_literature(self.connection, literature)
+
+                self.assertEqual(vars(literature), before)
+                stored = get_literature(self.connection, literature_id)
+                self.assertIsNotNone(stored)
+                assert stored is not None
+                self.assertEqual(stored.doi, normalize_doi(doi))
+
+    def test_add_normalizes_pmid_without_mutating_input(self) -> None:
+        pmid_values = (
+            "12345678",
+            "PMID: 00123",
+            "pmid: 00123",
+            " PMID: 00123 ",
+            "PMID: 001 23",
+            "ＰＭＩＤ： ００１２３",
+            "",
+            " \t\n",
+            None,
+        )
+
+        for pmid in pmid_values:
+            with self.subTest(pmid=repr(pmid)):
+                literature = Literature(title=f"PMID {pmid!r}", pmid=pmid)
+                before = vars(literature).copy()
+
+                literature_id = add_literature(self.connection, literature)
+
+                self.assertEqual(vars(literature), before)
+                stored = get_literature(self.connection, literature_id)
+                self.assertIsNotNone(stored)
+                assert stored is not None
+                self.assertEqual(stored.pmid, normalize_pmid(pmid))
+
+    def test_add_normalizes_both_identifiers_for_storage_only(self) -> None:
+        literature = Literature(
+            title="Combined identifier normalization",
+            doi=" HTTPS://DOI.ORG/10.ABC/Example ",
+            pmid=" PMID: 001 23 ",
+        )
+        before = vars(literature).copy()
+
+        literature_id = add_literature(self.connection, literature)
+
+        self.assertEqual(vars(literature), before)
+        stored = get_literature(self.connection, literature_id)
+        self.assertIsNotNone(stored)
+        assert stored is not None
+        self.assertEqual(stored.doi, "10.abc/example")
+        self.assertEqual(stored.pmid, "00123")
+
+    def test_add_rejects_invalid_identifiers_before_sql(self) -> None:
+        invalid_values = (
+            ("doi", 123),
+            ("pmid", "12A34"),
+            ("pmid", "12-34"),
+            ("pmid", "123.45"),
+            ("pmid", "-123"),
+            ("pmid", 123),
+        )
+
+        for field_name, value in invalid_values:
+            with self.subTest(field=field_name, value=repr(value)):
+                statements: list[str] = []
+                self.connection.set_trace_callback(statements.append)
+                try:
+                    with self.assertRaisesRegex(ValueError, field_name):
+                        add_literature(
+                            self.connection,
+                            Literature(
+                                title="Invalid identifier",
+                                **{field_name: value},
+                            ),
+                        )
+                finally:
+                    self.connection.set_trace_callback(None)
+
+                self.assertEqual(statements, [])
+                self.assertEqual(
+                    self.connection.execute(
+                        "SELECT COUNT(*) FROM literature"
+                    ).fetchone()[0],
+                    0,
+                )
+
+    def test_add_validation_preserves_callers_pending_transaction(self) -> None:
+        self.connection.execute(
+            "INSERT INTO tags (name) VALUES (?)",
+            ("pending-add-validation",),
+        )
+        self.assertTrue(self.connection.in_transaction)
+        statements: list[str] = []
+
+        self.connection.set_trace_callback(statements.append)
+        try:
+            with self.assertRaisesRegex(ValueError, "pmid"):
+                add_literature(
+                    self.connection,
+                    Literature(
+                        title="Rejected pending add",
+                        pmid="invalid",
+                    ),
+                )
+        finally:
+            self.connection.set_trace_callback(None)
+
+        self.assertEqual(statements, [])
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE name = ?",
+                ("pending-add-validation",),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM literature"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
 
     def test_empty_or_whitespace_title_cannot_be_registered(self) -> None:
         for title in ("", "   ", "\t\n"):
@@ -318,6 +610,348 @@ class LiteratureRepositoryTestCase(unittest.TestCase):
         self.assertEqual(stored.authors, "Updated Author")
         self.assertEqual(stored.journal, "Updated Journal")
         self.assertEqual(stored.rating, 4)
+
+    def test_update_accepts_publication_year_boundaries_and_none(self) -> None:
+        literature_id = add_literature(
+            self.connection,
+            Literature(title="Publication year updates"),
+        )
+        current_year = date.today().year
+
+        for publication_year in (1800, current_year, current_year + 1, None):
+            with self.subTest(publication_year=publication_year):
+                updates = {"publication_year": publication_year}
+                before_updates = updates.copy()
+
+                self.assertTrue(
+                    update_literature(
+                        self.connection,
+                        literature_id,
+                        updates,
+                    )
+                )
+
+                self.assertEqual(updates, before_updates)
+                stored = get_literature(self.connection, literature_id)
+                self.assertIsNotNone(stored)
+                assert stored is not None
+                self.assertEqual(stored.publication_year, publication_year)
+
+    def test_update_rejects_invalid_publication_year_without_writing(self) -> None:
+        literature_id = add_literature(
+            self.connection,
+            self.make_populated_literature("Invalid year update"),
+        )
+        before = self.get_raw_literature_row(literature_id)
+        fixed_today = date(2026, 12, 31)
+        maximum_year = fixed_today.year + 1
+
+        class FixedDate(date):
+            @classmethod
+            def today(cls) -> date:
+                return fixed_today
+
+        invalid_values = (
+            1799,
+            fixed_today.year + 2,
+            True,
+            False,
+            2025.0,
+            "2025",
+            {},
+        )
+
+        for publication_year in invalid_values:
+            with self.subTest(publication_year=repr(publication_year)):
+                updates = {"publication_year": publication_year}
+                before_updates = updates.copy()
+                statements: list[str] = []
+                self.connection.set_trace_callback(statements.append)
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        rf"publication_year.*1800〜{maximum_year}",
+                    ):
+                        with patch.object(repository_module, "date", FixedDate):
+                            update_literature(
+                                self.connection,
+                                literature_id,
+                                updates,
+                            )
+                finally:
+                    self.connection.set_trace_callback(None)
+
+                self.assertEqual(updates, before_updates)
+                self.assertFalse(
+                    any(
+                        statement.lstrip().upper().startswith(
+                            ("UPDATE", "COMMIT", "ROLLBACK")
+                        )
+                        for statement in statements
+                    )
+                )
+                self.assertEqual(
+                    self.get_raw_literature_row(literature_id),
+                    before,
+                )
+
+    def test_update_accepts_every_literature_status_value(self) -> None:
+        literature_id = add_literature(
+            self.connection,
+            Literature(title="Valid status updates"),
+        )
+        status_values = {
+            "ai_summary_status": ("未作成", "未確認", "確認済み", "修正済み"),
+            "verification_status": ("未確認", "一部確認", "確認済み", "要確認"),
+            "adoption_status": ("未判定", "採用候補", "採用", "除外"),
+        }
+
+        for field_name, allowed_values in status_values.items():
+            for value in allowed_values:
+                with self.subTest(field=field_name, value=value):
+                    updates = {field_name: value}
+                    before_updates = updates.copy()
+
+                    self.assertTrue(
+                        update_literature(
+                            self.connection,
+                            literature_id,
+                            updates,
+                        )
+                    )
+
+                    self.assertEqual(updates, before_updates)
+                    stored = get_literature(self.connection, literature_id)
+                    self.assertIsNotNone(stored)
+                    assert stored is not None
+                    self.assertEqual(getattr(stored, field_name), value)
+
+    def test_update_rejects_invalid_statuses_without_writing(self) -> None:
+        literature_id = add_literature(
+            self.connection,
+            self.make_populated_literature("Invalid status update"),
+        )
+        before = self.get_raw_literature_row(literature_id)
+        status_values = {
+            "ai_summary_status": ("未作成", "未確認", "確認済み", "修正済み"),
+            "verification_status": ("未確認", "一部確認", "確認済み", "要確認"),
+            "adoption_status": ("未判定", "採用候補", "採用", "除外"),
+        }
+
+        for field_name, allowed_values in status_values.items():
+            invalid_values = (
+                "不正",
+                None,
+                f" {allowed_values[0]} ",
+                1,
+                True,
+            )
+            for value in invalid_values:
+                with self.subTest(field=field_name, value=repr(value)):
+                    updates = {field_name: value}
+                    before_updates = updates.copy()
+                    statements: list[str] = []
+                    self.connection.set_trace_callback(statements.append)
+                    try:
+                        with self.assertRaises(ValueError) as raised:
+                            update_literature(
+                                self.connection,
+                                literature_id,
+                                updates,
+                            )
+                    finally:
+                        self.connection.set_trace_callback(None)
+
+                    message = str(raised.exception)
+                    self.assertIn(field_name, message)
+                    for allowed_value in allowed_values:
+                        self.assertIn(allowed_value, message)
+                    self.assertEqual(updates, before_updates)
+                    self.assertFalse(
+                        any(
+                            statement.lstrip().upper().startswith(
+                                ("UPDATE", "COMMIT", "ROLLBACK")
+                            )
+                            for statement in statements
+                        )
+                    )
+                    self.assertEqual(
+                        self.get_raw_literature_row(literature_id),
+                        before,
+                    )
+
+    def test_update_normalizes_only_supplied_identifier_and_keeps_mapping(
+        self,
+    ) -> None:
+        literature_id = add_literature(
+            self.connection,
+            Literature(
+                title="Identifier updates",
+                doi="10.1000/original",
+                pmid="00123",
+            ),
+        )
+        doi_updates = MappingProxyType(
+            {"doi": " HTTPS://DOI.ORG/10.ABC/Example "}
+        )
+        doi_before = dict(doi_updates)
+
+        self.assertTrue(
+            update_literature(
+                self.connection,
+                literature_id,
+                doi_updates,
+            )
+        )
+
+        self.assertEqual(dict(doi_updates), doi_before)
+        after_doi = get_literature(self.connection, literature_id)
+        self.assertIsNotNone(after_doi)
+        assert after_doi is not None
+        self.assertEqual(
+            after_doi.doi,
+            normalize_doi(doi_updates["doi"]),
+        )
+        self.assertEqual(after_doi.pmid, "00123")
+
+        pmid_updates = {"pmid": " PMID: 001 23 "}
+        pmid_before = pmid_updates.copy()
+        self.assertTrue(
+            update_literature(
+                self.connection,
+                literature_id,
+                pmid_updates,
+            )
+        )
+
+        self.assertEqual(pmid_updates, pmid_before)
+        after_pmid = get_literature(self.connection, literature_id)
+        self.assertIsNotNone(after_pmid)
+        assert after_pmid is not None
+        self.assertEqual(after_pmid.doi, "10.abc/example")
+        self.assertEqual(
+            after_pmid.pmid,
+            normalize_pmid(pmid_updates["pmid"]),
+        )
+
+    def test_update_rejects_invalid_pmid_without_changing_any_field(self) -> None:
+        literature_id = add_literature(
+            self.connection,
+            self.make_populated_literature("Invalid PMID update"),
+        )
+        before = self.get_raw_literature_row(literature_id)
+        updates = {
+            "pmid": "12A34",
+            "general_note": "Must not be partially applied",
+        }
+        before_updates = updates.copy()
+        statements: list[str] = []
+
+        self.connection.set_trace_callback(statements.append)
+        try:
+            with self.assertRaisesRegex(ValueError, "pmid"):
+                update_literature(
+                    self.connection,
+                    literature_id,
+                    updates,
+                )
+        finally:
+            self.connection.set_trace_callback(None)
+
+        self.assertEqual(updates, before_updates)
+        self.assertFalse(
+            any(
+                statement.lstrip().upper().startswith(
+                    ("UPDATE", "COMMIT", "ROLLBACK")
+                )
+                for statement in statements
+            )
+        )
+        self.assertEqual(
+            self.get_raw_literature_row(literature_id),
+            before,
+        )
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
+
+    def test_unrelated_updates_preserve_legacy_identifier_values(self) -> None:
+        legacy_doi = " DOI:10.1000/Mixed Case "
+        legacy_pmid = " PMID: 001 23 "
+        literature_id = self.insert_legacy_literature(
+            "Legacy identifiers",
+            doi=legacy_doi,
+            pmid=legacy_pmid,
+        )
+
+        self.assertTrue(
+            update_literature(
+                self.connection,
+                literature_id,
+                {"title": "Legacy identifiers with new title"},
+            )
+        )
+        after_title = self.get_raw_literature_row(literature_id)
+        self.assertEqual(after_title["doi"], legacy_doi)
+        self.assertEqual(after_title["pmid"], legacy_pmid)
+
+        self.assertTrue(
+            update_literature(
+                self.connection,
+                literature_id,
+                {"general_note": "New note only"},
+            )
+        )
+        after_note = self.get_raw_literature_row(literature_id)
+        self.assertEqual(after_note["doi"], legacy_doi)
+        self.assertEqual(after_note["pmid"], legacy_pmid)
+
+    def test_invalid_update_preserves_callers_pending_transaction(self) -> None:
+        literature_id = add_literature(
+            self.connection,
+            self.make_populated_literature("Pending update validation"),
+        )
+        before = self.get_raw_literature_row(literature_id)
+        self.connection.execute(
+            "INSERT INTO tags (name) VALUES (?)",
+            ("pending-update-validation",),
+        )
+        self.assertTrue(self.connection.in_transaction)
+        statements: list[str] = []
+
+        self.connection.set_trace_callback(statements.append)
+        try:
+            with self.assertRaisesRegex(ValueError, "publication_year"):
+                update_literature(
+                    self.connection,
+                    literature_id,
+                    {
+                        "publication_year": date.today().year + 2,
+                        "general_note": "Must not be written",
+                    },
+                )
+        finally:
+            self.connection.set_trace_callback(None)
+
+        self.assertFalse(
+            any(
+                statement.lstrip().upper().startswith(
+                    ("UPDATE", "COMMIT", "ROLLBACK")
+                )
+                for statement in statements
+            )
+        )
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE name = ?",
+                ("pending-update-validation",),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            self.get_raw_literature_row(literature_id),
+            before,
+        )
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
 
     def test_title_only_update_preserves_every_other_field(self) -> None:
         literature_id = add_literature(
@@ -525,6 +1159,29 @@ class LiteratureRepositoryTestCase(unittest.TestCase):
                 {"title": "Unknown literature"},
             )
         )
+
+    def test_unknown_id_returns_false_before_value_validation(self) -> None:
+        invalid_updates = (
+            {"publication_year": date.today().year + 2},
+            {"ai_summary_status": None},
+            {"verification_status": "不正"},
+            {"adoption_status": " 採用 "},
+            {"pmid": "12A34"},
+        )
+
+        for updates in invalid_updates:
+            with self.subTest(updates=updates):
+                before_updates = updates.copy()
+
+                self.assertFalse(
+                    update_literature(
+                        self.connection,
+                        999999,
+                        updates,
+                    )
+                )
+
+                self.assertEqual(updates, before_updates)
 
     def test_update_literature_rejects_empty_or_whitespace_title(self) -> None:
         literature_id = add_literature(

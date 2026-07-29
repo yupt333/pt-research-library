@@ -216,7 +216,7 @@ class DatabaseBackupTestCase(unittest.TestCase):
                 issue="3",
                 pages="101-112",
                 doi="synthetic-doi-value",
-                pmid="synthetic-pmid-value",
+                pmid="900000001",
                 url="https://example.test/synthetic-record",
                 language="ja",
                 publication_type="Synthetic Test Type",
@@ -376,7 +376,7 @@ class DatabaseBackupTestCase(unittest.TestCase):
             )
             self.assertEqual(populated["rating"], 5)
             self.assertEqual(populated["doi"], "synthetic-doi-value")
-            self.assertEqual(populated["pmid"], "synthetic-pmid-value")
+            self.assertEqual(populated["pmid"], "900000001")
             self.assertIsNone(null_record["authors"])
             self.assertIsNone(null_record["publication_year"])
             self.assertIsNone(null_record["rating"])

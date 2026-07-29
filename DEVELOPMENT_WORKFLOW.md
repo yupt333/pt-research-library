@@ -156,9 +156,21 @@ Includes:
 
 Status: in progress
 
-Current sub-step:
+Completed sub-step:
 
 - Step 8A: CLI foundation, literature list, and search
+  - Status: completed and pushed
+  - Includes the interactive CLI foundation, literature list, and literature
+    search
+
+Current sub-step:
+
+- Step 8B: remaining interactive CLI preparation
+  - Status: in progress
+  - Step 8B-0: literature write validation and identifier normalization is
+    currently in progress
+  - Step 8B-1 begins only after Step 8B-0 is completed
+  - Step 8B-2 has not started
 
 Planned scope:
 

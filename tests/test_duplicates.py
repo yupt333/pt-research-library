@@ -230,6 +230,26 @@ class DuplicateCandidateTestCase(unittest.TestCase):
             Literature(title=title, **values),
         )
 
+    def insert_legacy_record(
+        self,
+        title: str,
+        *,
+        doi: object = None,
+        pmid: object = None,
+    ) -> int:
+        """Insert legacy/corrupt identifiers without the repository write path."""
+        cursor = self.connection.execute(
+            """
+            INSERT INTO literature (title, doi, pmid)
+            VALUES (?, ?, ?)
+            """,
+            (title, doi, pmid),
+        )
+        self.connection.commit()
+        self.assertIsNotNone(cursor.lastrowid)
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
     def database_snapshot(self) -> dict[str, list[tuple[object, ...]]]:
         order_by = {
             "literature": "id",
@@ -484,7 +504,7 @@ class DuplicateCandidateTestCase(unittest.TestCase):
         self.assertEqual(get_literature(self.connection, literature_id), before)
 
     def test_doi_matches_across_case_and_supported_formats(self) -> None:
-        literature_id = self.add_record(
+        literature_id = self.insert_legacy_record(
             "Stored DOI candidate",
             doi="DOI:10.1000/ABC",
         )
@@ -522,7 +542,7 @@ class DuplicateCandidateTestCase(unittest.TestCase):
                 )
 
     def test_pmid_matches_across_prefix_and_internal_whitespace(self) -> None:
-        literature_id = self.add_record(
+        literature_id = self.insert_legacy_record(
             "Stored PMID candidate",
             pmid="PMID: 12 345 678",
         )
@@ -582,21 +602,16 @@ class DuplicateCandidateTestCase(unittest.TestCase):
     def test_invalid_stored_identifiers_are_ignored_without_stopping_other_matches(
         self,
     ) -> None:
-        doi_id = self.add_record(
+        doi_id = self.insert_legacy_record(
             "Stored invalid PMID",
             doi="doi:10.1000/safe",
             pmid="12A34",
         )
-        title_id = self.add_record(
+        title_id = self.insert_legacy_record(
             "Shared normalized title",
-            doi="10.1000/not-matching",
-            pmid="invalid",
+            doi=sqlite3.Binary(b"invalid"),
+            pmid=sqlite3.Binary(b"invalid"),
         )
-        self.connection.execute(
-            "UPDATE literature SET doi = ?, pmid = ? WHERE id = ?",
-            (sqlite3.Binary(b"invalid"), sqlite3.Binary(b"invalid"), title_id),
-        )
-        self.connection.commit()
 
         result = find_duplicate_candidates(
             self.connection,
@@ -613,16 +628,16 @@ class DuplicateCandidateTestCase(unittest.TestCase):
     def test_non_ascii_stored_pmids_are_ignored_but_other_matches_continue(
         self,
     ) -> None:
-        ignored_pmid_id = self.add_record(
+        ignored_pmid_id = self.insert_legacy_record(
             "Stored non-ASCII PMID only",
             pmid="١٢٣٤",
         )
-        doi_id = self.add_record(
+        doi_id = self.insert_legacy_record(
             "Stored non-ASCII PMID with DOI",
             doi="10.1000/non-ascii-pmid",
             pmid="۱۲۳۴",
         )
-        title_id = self.add_record(
+        title_id = self.insert_legacy_record(
             "Shared title despite non-ASCII PMID",
             pmid="१२३४",
         )

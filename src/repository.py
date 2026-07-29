@@ -5,6 +5,7 @@ import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from typing import Mapping, Optional
 
+from src.duplicates import normalize_doi, normalize_pmid
 from src.models import Literature, Tag, UsageHistory
 
 
@@ -56,6 +57,9 @@ _UPDATABLE_USAGE_HISTORY_COLUMNS = frozenset(
     ("usage_type", "project_name", "usage_note", "used_at")
 )
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+_AI_SUMMARY_STATUSES = ("未作成", "未確認", "確認済み", "修正済み")
+_VERIFICATION_STATUSES = ("未確認", "一部確認", "確認済み", "要確認")
+_ADOPTION_STATUSES = ("未判定", "採用候補", "採用", "除外")
 
 
 def _row_to_literature(row: sqlite3.Row) -> Literature:
@@ -107,6 +111,37 @@ def _validate_used_at(value: object) -> Optional[str]:
     return value
 
 
+def _validate_publication_year(value: object) -> Optional[int]:
+    """Validate a nullable publication year using the runtime year."""
+    if value is None:
+        return None
+    maximum_year = date.today().year + 1
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1800 <= value <= maximum_year
+    ):
+        raise ValueError(
+            "publication_yearはNoneまたは"
+            f"1800〜{maximum_year}の整数で指定してください。"
+        )
+    return value
+
+
+def _validate_literature_status(
+    field_name: str,
+    value: object,
+    allowed_values: tuple[str, ...],
+) -> str:
+    """Validate one required literature status without normalizing it."""
+    if not isinstance(value, str) or value not in allowed_values:
+        allowed_text = "、".join(allowed_values)
+        raise ValueError(
+            f"{field_name}は次の許可値から指定してください: {allowed_text}"
+        )
+    return value
+
+
 def _is_sqlite_constraint(
     error: sqlite3.IntegrityError,
     error_code: int,
@@ -140,9 +175,34 @@ def _next_updated_at(previous_updated_at: str) -> str:
 
 def add_literature(connection: sqlite3.Connection, literature: Literature) -> int:
     """Insert one literature record and return its generated ID."""
+    validated_values = {
+        column: getattr(literature, column)
+        for column in _LITERATURE_COLUMNS
+    }
+    validated_values["publication_year"] = _validate_publication_year(
+        literature.publication_year
+    )
+    validated_values["ai_summary_status"] = _validate_literature_status(
+        "ai_summary_status",
+        literature.ai_summary_status,
+        _AI_SUMMARY_STATUSES,
+    )
+    validated_values["verification_status"] = _validate_literature_status(
+        "verification_status",
+        literature.verification_status,
+        _VERIFICATION_STATUSES,
+    )
+    validated_values["adoption_status"] = _validate_literature_status(
+        "adoption_status",
+        literature.adoption_status,
+        _ADOPTION_STATUSES,
+    )
+    validated_values["doi"] = normalize_doi(literature.doi)
+    validated_values["pmid"] = normalize_pmid(literature.pmid)
+
     column_names = ", ".join(_LITERATURE_COLUMNS)
     placeholders = ", ".join("?" for _ in _LITERATURE_COLUMNS)
-    values = tuple(getattr(literature, column) for column in _LITERATURE_COLUMNS)
+    values = tuple(validated_values[column] for column in _LITERATURE_COLUMNS)
 
     with connection:
         cursor = connection.execute(
@@ -201,14 +261,44 @@ def update_literature(
     if current_row is None:
         return False
 
+    validated_updates = dict(updates)
+    if "publication_year" in validated_updates:
+        validated_updates["publication_year"] = _validate_publication_year(
+            validated_updates["publication_year"]
+        )
+    if "ai_summary_status" in validated_updates:
+        validated_updates["ai_summary_status"] = _validate_literature_status(
+            "ai_summary_status",
+            validated_updates["ai_summary_status"],
+            _AI_SUMMARY_STATUSES,
+        )
+    if "verification_status" in validated_updates:
+        validated_updates["verification_status"] = (
+            _validate_literature_status(
+                "verification_status",
+                validated_updates["verification_status"],
+                _VERIFICATION_STATUSES,
+            )
+        )
+    if "adoption_status" in validated_updates:
+        validated_updates["adoption_status"] = _validate_literature_status(
+            "adoption_status",
+            validated_updates["adoption_status"],
+            _ADOPTION_STATUSES,
+        )
+    if "doi" in validated_updates:
+        validated_updates["doi"] = normalize_doi(validated_updates["doi"])
+    if "pmid" in validated_updates:
+        validated_updates["pmid"] = normalize_pmid(validated_updates["pmid"])
+
     candidate_values = dict(current_row)
-    candidate_values.update(updates)
+    candidate_values.update(validated_updates)
     Literature(**candidate_values)
 
-    update_columns = tuple(updates)
+    update_columns = tuple(validated_updates)
     assignments = ", ".join(f"{column} = ?" for column in update_columns)
     updated_at = _next_updated_at(current_row["updated_at"])
-    values = tuple(updates[column] for column in update_columns)
+    values = tuple(validated_updates[column] for column in update_columns)
 
     with connection:
         cursor = connection.execute(

@@ -289,17 +289,37 @@ class CliTestCase(unittest.TestCase):
         title = '肩関節, "引用"\n省略しないタイトル'
         authors = "  Author A, Author B  "
         journal = 'Journal "Quoted", Volume'
-        literature_id = self.add_record(
-            title,
-            authors=authors,
-            journal=journal,
-            publication_year=2025,
-            doi=" DOI:10.1000/Mixed Case ",
-            pmid=" PMID: 001 23 ",
-            verification_status="要確認",
-            adoption_status="採用候補",
-            rating=4,
+        # Bypass the write-normalizing repository to model a legacy stored row.
+        cursor = self.connection.execute(
+            """
+            INSERT INTO literature (
+                title,
+                authors,
+                journal,
+                publication_year,
+                doi,
+                pmid,
+                verification_status,
+                adoption_status,
+                rating
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                title,
+                authors,
+                journal,
+                2025,
+                " DOI:10.1000/Mixed Case ",
+                " PMID: 001 23 ",
+                "要確認",
+                "採用候補",
+                4,
+            ),
         )
+        self.connection.commit()
+        literature_id = cursor.lastrowid
+        self.assertIsNotNone(literature_id)
 
         _, _, outputs = self.run_with_actions(["1", "0"])
         displayed = "\n".join(outputs)
