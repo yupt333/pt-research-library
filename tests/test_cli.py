@@ -1,20 +1,24 @@
-"""Tests for the Step 8A read-only interactive CLI."""
+"""Tests for the Step 8 interactive CLI."""
 
 import sqlite3
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
 import src.cli as cli_module
+import src.repository as repository_module
 from src.cli import run_cli
 from src.database import connect_database, initialize_database
+from src.duplicates import DuplicateCandidate, find_duplicate_candidates
 from src.models import Literature
 from src.repository import (
     add_literature,
     attach_tag_to_literature,
     create_tag,
     create_usage_history,
+    get_literature,
     list_literature,
 )
 from src.search import search_literature
@@ -30,6 +34,37 @@ _SEARCH_FIELDS = (
     "ai_summary_status",
     "rating",
     "usage_type",
+)
+
+_REGISTRATION_FIELDS = (
+    "title",
+    "authors",
+    "journal",
+    "publication_year",
+    "volume",
+    "issue",
+    "pages",
+    "doi",
+    "pmid",
+    "url",
+    "language",
+    "publication_type",
+    "abstract",
+    "pdf_path",
+    "personal_summary",
+    "ai_summary",
+    "ai_summary_status",
+    "general_note",
+    "key_findings",
+    "methods_note",
+    "clinical_note",
+    "limitation_note",
+    "relevance_note",
+    "evidence_level",
+    "verification_status",
+    "adoption_status",
+    "exclusion_reason",
+    "rating",
 )
 
 
@@ -105,6 +140,27 @@ class CliTestCase(unittest.TestCase):
         values = {field: "" for field in _SEARCH_FIELDS}
         values.update(conditions)
         return ["2", *(values[field] for field in _SEARCH_FIELDS), "0"]
+
+    @staticmethod
+    def registration_values(**fields: str) -> list[str]:
+        values = {field: "" for field in _REGISTRATION_FIELDS}
+        values.update(fields)
+        return [values[field] for field in _REGISTRATION_FIELDS]
+
+    @classmethod
+    def registration_actions(
+        cls,
+        *,
+        confirmation: str = "1",
+        final_menu_choice: str = "0",
+        **fields: str,
+    ) -> list[str]:
+        return [
+            "3",
+            *cls.registration_values(**fields),
+            confirmation,
+            final_menu_choice,
+        ]
 
     def add_record(self, title: str, **values: object) -> int:
         return add_literature(
@@ -199,7 +255,10 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("理学療法文献ライブラリ", outputs[0])
         self.assertIn("1. 文献一覧", outputs[0])
         self.assertIn("2. 文献検索", outputs[0])
+        self.assertIn("3. 文献登録", outputs[0])
         self.assertIn("0. 終了", outputs[0])
+        self.assertNotIn("文献編集", outputs[0])
+        self.assertNotIn("文献削除", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
 
@@ -219,7 +278,7 @@ class CliTestCase(unittest.TestCase):
 
         _, feeder, outputs = self.run_with_actions(actions)
 
-        error_message = "入力エラー: 0、1、2のいずれかを選択してください。"
+        error_message = "入力エラー: 0、1、2、3のいずれかを選択してください。"
         self.assertEqual(
             outputs.count(error_message),
             invalid_count + 2,
@@ -991,6 +1050,1540 @@ class CliTestCase(unittest.TestCase):
         self.assertFalse(
             any(item.startswith("入力エラー: ") for item in outputs)
         )
+
+    def test_registration_prompts_all_fields_in_required_order(self) -> None:
+        _, feeder, outputs = self.run_with_actions(
+            self.registration_actions(
+                title="Prompt order",
+                confirmation="0",
+            )
+        )
+
+        registration_prompts = feeder.prompts[1:29]
+        self.assertEqual(len(registration_prompts), 28)
+        for field_name, prompt in zip(
+            _REGISTRATION_FIELDS,
+            registration_prompts,
+        ):
+            with self.subTest(field_name=field_name):
+                self.assertIn(field_name, prompt)
+        for prompt in registration_prompts[1:]:
+            self.assertIn("空欄", prompt)
+        self.assertIn(
+            "未作成・未確認・確認済み・修正済み",
+            registration_prompts[16],
+        )
+        self.assertIn(
+            "未確認・一部確認・確認済み・要確認",
+            registration_prompts[24],
+        )
+        self.assertIn(
+            "未判定・採用候補・採用・除外",
+            registration_prompts[25],
+        )
+        confirmation_menu = "\n".join(outputs)
+        self.assertIn("1. この内容で登録する", confirmation_menu)
+        self.assertIn("0. 登録を中止する", confirmation_menu)
+
+    def test_blank_title_stops_before_model_duplicate_check_or_add(self) -> None:
+        before = self.table_snapshot()
+        with (
+            patch.object(cli_module, "Literature") as literature_class,
+            patch.object(
+                cli_module,
+                "find_duplicate_candidates",
+            ) as duplicate_check,
+            patch.object(cli_module, "add_literature") as added,
+        ):
+            _, feeder, outputs = self.run_with_actions(
+                ["3", " \t\n ", "0"]
+            )
+
+        literature_class.assert_not_called()
+        duplicate_check.assert_not_called()
+        added.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            feeder.prompts,
+            [
+                "選択してください: ",
+                "title（必須）: ",
+                "選択してください: ",
+            ],
+        )
+        self.assertTrue(
+            any(
+                item.startswith("入力エラー: ")
+                and "タイトルは必須" in item
+                for item in outputs
+            )
+        )
+
+    def test_minimal_registration_saves_defaults_and_no_related_rows(
+        self,
+    ) -> None:
+        result, feeder, outputs = self.run_with_actions(
+            self.registration_actions(title="Minimal registration")
+        )
+
+        self.assertIsNone(result)
+        records = list_literature(self.connection)
+        self.assertEqual(len(records), 1)
+        stored = records[0]
+        self.assertEqual(stored.title, "Minimal registration")
+        for field_name in (
+            "authors",
+            "journal",
+            "publication_year",
+            "volume",
+            "issue",
+            "pages",
+            "doi",
+            "pmid",
+            "url",
+            "language",
+            "publication_type",
+            "abstract",
+            "pdf_path",
+            "personal_summary",
+            "ai_summary",
+            "general_note",
+            "key_findings",
+            "methods_note",
+            "clinical_note",
+            "limitation_note",
+            "relevance_note",
+            "evidence_level",
+            "exclusion_reason",
+            "rating",
+        ):
+            with self.subTest(field_name=field_name):
+                self.assertIsNone(getattr(stored, field_name))
+        self.assertEqual(stored.ai_summary_status, "未作成")
+        self.assertEqual(stored.verification_status, "未確認")
+        self.assertEqual(stored.adoption_status, "未判定")
+        self.assertIsNotNone(stored.created_at)
+        self.assertIsNotNone(stored.updated_at)
+        self.assertEqual(
+            self.connection.execute("SELECT COUNT(*) FROM tags").fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM literature_tags"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM usage_history"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertFalse(self.connection.in_transaction)
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
+        self.assertIn("重複候補はありません。", outputs)
+        self.assertIn("文献を登録しました。", outputs)
+        self.assertIn(f"ID: {stored.id}", outputs)
+        self.assertIn("title: Minimal registration", outputs)
+        self.assertEqual(feeder.prompts.count("選択してください: "), 3)
+
+    def test_full_registration_preserves_fields_and_normalizes_on_save(
+        self,
+    ) -> None:
+        fields = {
+            "title": '  肩関節 "Full", Study  ',
+            "authors": '  Author A, "Author B"\nAuthor C  ',
+            "journal": "  Journal 内部  空白  ",
+            "publication_year": " 2025 ",
+            "volume": " 12 ",
+            "issue": " 3 ",
+            "pages": " 101-112 ",
+            "doi": " DOI:10.ABC/Example ",
+            "pmid": " PMID: 001 23 ",
+            "url": " https://example.test/full ",
+            "language": " 日本語 / English ",
+            "publication_type": " 原著 ",
+            "abstract": '  Abstract, "quoted"\nsecond line  ',
+            "pdf_path": " /tmp/full literature.pdf ",
+            "personal_summary": " 自分の要約 ",
+            "ai_summary": " AI要約\n未確認の本文 ",
+            "ai_summary_status": " 修正済み ",
+            "general_note": " 一般メモ ",
+            "key_findings": " 主要な結果 ",
+            "methods_note": " 方法, note ",
+            "clinical_note": " 臨床的解釈 ",
+            "limitation_note": " 限界 ",
+            "relevance_note": " 研究との関連 ",
+            "evidence_level": " Level II ",
+            "verification_status": " 一部確認 ",
+            "adoption_status": " 採用候補 ",
+            "exclusion_reason": " 除外理由も保持 ",
+            "rating": " 05 ",
+        }
+        captured: list[
+            tuple[Literature, dict[str, object], dict[str, object]]
+        ] = []
+
+        def tracked_add(
+            connection: sqlite3.Connection,
+            literature: Literature,
+        ) -> int:
+            before = vars(literature).copy()
+            literature_id = add_literature(connection, literature)
+            captured.append((literature, before, vars(literature).copy()))
+            return literature_id
+
+        with (
+            patch.object(
+                cli_module,
+                "find_duplicate_candidates",
+                wraps=find_duplicate_candidates,
+            ) as duplicate_check,
+            patch.object(
+                cli_module,
+                "add_literature",
+                side_effect=tracked_add,
+            ) as added,
+        ):
+            _, _, outputs = self.run_with_actions(
+                self.registration_actions(**fields)
+            )
+
+        self.assertEqual(duplicate_check.call_count, 1)
+        duplicate_check.assert_called_once_with(
+            self.connection,
+            title='肩関節 "Full", Study',
+            doi="DOI:10.ABC/Example",
+            pmid="PMID: 001 23",
+        )
+        added.assert_called_once()
+        literature, before_add, after_add = captured[0]
+        self.assertEqual(before_add, after_add)
+        self.assertEqual(literature.doi, "DOI:10.ABC/Example")
+        self.assertEqual(literature.pmid, "PMID: 001 23")
+
+        records = list_literature(self.connection)
+        self.assertEqual(len(records), 1)
+        stored = records[0]
+        expected_values = {
+            "title": '肩関節 "Full", Study',
+            "authors": 'Author A, "Author B"\nAuthor C',
+            "journal": "Journal 内部  空白",
+            "publication_year": 2025,
+            "volume": "12",
+            "issue": "3",
+            "pages": "101-112",
+            "doi": "10.abc/example",
+            "pmid": "00123",
+            "url": "https://example.test/full",
+            "language": "日本語 / English",
+            "publication_type": "原著",
+            "abstract": 'Abstract, "quoted"\nsecond line',
+            "pdf_path": "/tmp/full literature.pdf",
+            "personal_summary": "自分の要約",
+            "ai_summary": "AI要約\n未確認の本文",
+            "ai_summary_status": "修正済み",
+            "general_note": "一般メモ",
+            "key_findings": "主要な結果",
+            "methods_note": "方法, note",
+            "clinical_note": "臨床的解釈",
+            "limitation_note": "限界",
+            "relevance_note": "研究との関連",
+            "evidence_level": "Level II",
+            "verification_status": "一部確認",
+            "adoption_status": "採用候補",
+            "exclusion_reason": "除外理由も保持",
+            "rating": 5,
+        }
+        for field_name, expected in expected_values.items():
+            with self.subTest(field_name=field_name):
+                self.assertEqual(getattr(stored, field_name), expected)
+        displayed = "\n".join(outputs)
+        for expected in (
+            'title: 肩関節 "Full", Study',
+            'authors: Author A, "Author B"\nAuthor C',
+            "DOI:10.ABC/Example",
+            "PMID: 001 23",
+            "https://example.test/full",
+            "/tmp/full literature.pdf",
+            'Abstract, "quoted"\nsecond line',
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, displayed)
+        self.assertIn(
+            "DOIとPMIDは登録時に標準形式へ正規化されます。",
+            outputs,
+        )
+
+    def test_registration_formatter_has_all_fields_in_order_and_is_read_only(
+        self,
+    ) -> None:
+        values = {
+            field_name: f"value-{field_name}"
+            for field_name in _REGISTRATION_FIELDS
+            if field_name
+            not in {
+                "publication_year",
+                "rating",
+                "ai_summary_status",
+                "verification_status",
+                "adoption_status",
+            }
+        }
+        literature = Literature(
+            **values,
+            publication_year=0,
+            rating=1,
+            ai_summary_status="未確認",
+            verification_status="要確認",
+            adoption_status="除外",
+        )
+        before = vars(literature).copy()
+
+        formatted = cli_module._format_registration_literature(literature)
+
+        labels = [
+            line.split(": ", 1)[0]
+            for line in formatted.splitlines()
+        ]
+        self.assertEqual(labels, list(_REGISTRATION_FIELDS))
+        self.assertIn("publication_year: 0", formatted)
+        self.assertIn("rating: 1", formatted)
+        self.assertEqual(vars(literature), before)
+
+        null_literature = Literature(title="Null formatter")
+        null_formatted = cli_module._format_registration_literature(
+            null_literature
+        )
+        self.assertIn("authors: 未登録", null_formatted)
+        self.assertNotIn("authors: None", null_formatted)
+
+    def test_registration_does_not_nfkc_or_transform_text_fields(self) -> None:
+        title = "ＳＨＯＵＬＤＥＲ： Study"
+        abstract = "Line 1,\nLine 2  keeps  spaces"
+
+        _, _, outputs = self.run_with_actions(
+            self.registration_actions(
+                title=f"  {title}  ",
+                abstract=f"  {abstract}  ",
+            )
+        )
+
+        stored = list_literature(self.connection)[0]
+        self.assertEqual(stored.title, title)
+        self.assertEqual(stored.abstract, abstract)
+        displayed = "\n".join(outputs)
+        self.assertIn(f"title: {title}", displayed)
+        self.assertIn(f"abstract: {abstract}", displayed)
+
+    def test_punctuation_only_title_uses_duplicate_api_value_error(self) -> None:
+        before = self.table_snapshot()
+        with patch.object(cli_module, "add_literature") as added:
+            _, _, outputs = self.run_with_actions(
+                [
+                    "3",
+                    *self.registration_values(title="：—、。"),
+                    "0",
+                ]
+            )
+
+        added.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertTrue(
+            any(
+                item.startswith("登録エラー: ")
+                and "title" in item
+                for item in outputs
+            )
+        )
+
+    def test_ai_summary_status_defaults_and_explicit_values(self) -> None:
+        cases = (
+            ("", "", "未作成"),
+            ("AI summary", "", "未確認"),
+            ("AI summary", "確認済み", "確認済み"),
+            ("AI summary", "修正済み", "修正済み"),
+        )
+
+        for index, (summary, status, expected) in enumerate(cases):
+            with self.subTest(summary=summary, status=status):
+                title = f"AI status {index}"
+                self.run_with_actions(
+                    self.registration_actions(
+                        title=title,
+                        ai_summary=summary,
+                        ai_summary_status=status,
+                    )
+                )
+                stored = list_literature(self.connection)[-1]
+                self.assertEqual(stored.title, title)
+                self.assertEqual(stored.ai_summary_status, expected)
+
+    def test_invalid_status_is_repository_value_error_not_sqlite_error(
+        self,
+    ) -> None:
+        for field_name in (
+            "ai_summary_status",
+            "verification_status",
+            "adoption_status",
+        ):
+            with self.subTest(field_name=field_name):
+                before = self.table_snapshot()
+                _, _, outputs = self.run_with_actions(
+                    self.registration_actions(
+                        title=f"Invalid status {field_name}",
+                        ai_summary="Manual AI text",
+                        **{field_name: "不正状態"},
+                    )
+                )
+
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertTrue(
+                    any(
+                        item.startswith("登録エラー: ")
+                        and field_name in item
+                        for item in outputs
+                    )
+                )
+                self.assertNotIn(
+                    "データベースエラーが発生しました。",
+                    outputs,
+                )
+                self.assertFalse(self.connection.in_transaction)
+
+    def test_registration_integer_format_errors_stop_before_model_and_apis(
+        self,
+    ) -> None:
+        cases = {
+            "publication_year": (
+                "+1",
+                "-1",
+                "1.5",
+                "1e3",
+                "２０２５",
+                "١٢٣٤",
+                "year",
+            ),
+            "rating": (
+                "+1",
+                "-1",
+                "1.5",
+                "1e3",
+                "５",
+                "١",
+                "rating",
+            ),
+        }
+
+        for field_name, invalid_values in cases.items():
+            for index, invalid_value in enumerate(invalid_values):
+                with self.subTest(
+                    field_name=field_name,
+                    invalid_value=invalid_value,
+                ):
+                    values = self.registration_values(
+                        title=f"Invalid format {field_name} {index}",
+                        **{field_name: invalid_value},
+                    )
+                    before = self.table_snapshot()
+                    with (
+                        patch.object(cli_module, "Literature") as model,
+                        patch.object(
+                            cli_module,
+                            "find_duplicate_candidates",
+                        ) as duplicate_check,
+                        patch.object(
+                            cli_module,
+                            "add_literature",
+                        ) as added,
+                    ):
+                        _, _, outputs = self.run_with_actions(
+                            ["3", *values, "0"]
+                        )
+
+                    model.assert_not_called()
+                    duplicate_check.assert_not_called()
+                    added.assert_not_called()
+                    self.assertEqual(self.table_snapshot(), before)
+                    self.assertTrue(
+                        any(
+                            item.startswith("入力エラー: ")
+                            and field_name in item
+                            for item in outputs
+                        )
+                    )
+
+    def test_registration_integer_ascii_forms_and_model_rating_bounds(
+        self,
+    ) -> None:
+        values = self.registration_values(
+            title="ASCII conversion",
+            publication_year="05",
+            rating="05",
+        )
+        converted = cli_module._prepare_registration_values(
+            dict(zip(_REGISTRATION_FIELDS, values))
+        )
+        self.assertEqual(converted["publication_year"], 5)
+        self.assertEqual(converted["rating"], 5)
+
+        for rating in ("0", "6"):
+            with self.subTest(rating=rating):
+                before = self.table_snapshot()
+                with (
+                    patch.object(
+                        cli_module,
+                        "find_duplicate_candidates",
+                    ) as duplicate_check,
+                    patch.object(cli_module, "add_literature") as added,
+                ):
+                    _, _, outputs = self.run_with_actions(
+                        [
+                            "3",
+                            *self.registration_values(
+                                title=f"Invalid rating {rating}",
+                                rating=rating,
+                            ),
+                            "0",
+                        ]
+                    )
+                duplicate_check.assert_not_called()
+                added.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertTrue(
+                    any(
+                        item.startswith("登録エラー: ")
+                        and "rating" in item
+                        for item in outputs
+                    )
+                )
+
+    def test_unexpected_model_exceptions_are_not_registration_errors(
+        self,
+    ) -> None:
+        for expected in (
+            TypeError("model type failure"),
+            RuntimeError("model runtime failure"),
+        ):
+            with self.subTest(exception=type(expected).__name__):
+                outputs: list[str] = []
+                before = self.table_snapshot()
+                with (
+                    patch.object(
+                        cli_module,
+                        "Literature",
+                        side_effect=expected,
+                    ),
+                    patch.object(
+                        cli_module,
+                        "find_duplicate_candidates",
+                    ) as duplicate_check,
+                    patch.object(cli_module, "add_literature") as added,
+                ):
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(
+                                [
+                                    "3",
+                                    *self.registration_values(
+                                        title="Unexpected model exception"
+                                    ),
+                                ]
+                            ),
+                            output_func=outputs.append,
+                        )
+                self.assertIs(raised.exception, expected)
+                duplicate_check.assert_not_called()
+                added.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertFalse(
+                    any(
+                        item.startswith("登録エラー: ")
+                        for item in outputs
+                    )
+                )
+
+    def test_publication_year_repository_boundaries(self) -> None:
+        fixed_today = date(2026, 12, 31)
+
+        class FixedDate(date):
+            @classmethod
+            def today(cls) -> date:
+                return fixed_today
+
+        with patch.object(repository_module, "date", FixedDate):
+            for publication_year in ("1800", "2027"):
+                with self.subTest(publication_year=publication_year):
+                    before_count = len(list_literature(self.connection))
+                    self.run_with_actions(
+                        self.registration_actions(
+                            title=f"Valid year {publication_year}",
+                            publication_year=publication_year,
+                        )
+                    )
+                    self.assertEqual(
+                        len(list_literature(self.connection)),
+                        before_count + 1,
+                    )
+
+            for publication_year in ("1799", "2028"):
+                with self.subTest(publication_year=publication_year):
+                    before = self.table_snapshot()
+                    _, _, outputs = self.run_with_actions(
+                        self.registration_actions(
+                            title=f"Invalid year {publication_year}",
+                            publication_year=publication_year,
+                        )
+                    )
+                    self.assertEqual(self.table_snapshot(), before)
+                    self.assertTrue(
+                        any(
+                            item.startswith("登録エラー: ")
+                            and "publication_year" in item
+                            for item in outputs
+                        )
+                    )
+
+    def test_duplicate_candidates_are_displayed_in_api_order_then_cancelled(
+        self,
+    ) -> None:
+        title_only_id = self.add_record(
+            "Shared duplicate title",
+            publication_year=2025,
+        )
+        pmid_id = self.add_record(
+            "Distinct PMID title",
+            publication_year=2024,
+            pmid="00123",
+        )
+        doi_id = self.add_record(
+            "Shared duplicate title",
+            publication_year=2023,
+            doi="10.1000/shared",
+        )
+        existing_before = {
+            literature_id: get_literature(self.connection, literature_id)
+            for literature_id in (title_only_id, pmid_id, doi_id)
+        }
+        expected_candidates = find_duplicate_candidates(
+            self.connection,
+            title="Shared duplicate title",
+            doi="DOI:10.1000/SHARED",
+            pmid="PMID: 001 23",
+        )
+        before = self.table_snapshot()
+
+        _, _, outputs = self.run_with_actions(
+            self.registration_actions(
+                title="Shared duplicate title",
+                doi="DOI:10.1000/SHARED",
+                pmid="PMID: 001 23",
+                confirmation="0",
+            )
+        )
+
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertIn("警告: 重複候補があります。", outputs)
+        self.assertIn(
+            "候補は自動統合されず、既存文献も変更されません。",
+            outputs,
+        )
+        expected_ids = [
+            candidate.literature.id for candidate in expected_candidates
+        ]
+        self.assertNotEqual(expected_ids, sorted(expected_ids))
+        self.assertTrue(
+            any(
+                len(candidate.match_reasons) > 1
+                for candidate in expected_candidates
+            )
+        )
+        candidate_blocks = [
+            item for item in outputs if item.startswith("既存文献ID: ")
+        ]
+        displayed_ids = [
+            int(block.splitlines()[0].split(": ", 1)[1])
+            for block in candidate_blocks
+        ]
+        self.assertEqual(displayed_ids, expected_ids)
+        for candidate, block in zip(
+            expected_candidates,
+            candidate_blocks,
+            strict=True,
+        ):
+            with self.subTest(literature_id=candidate.literature.id):
+                literature = candidate.literature
+                self.assertIn(f"title: {literature.title}", block)
+                self.assertIn(
+                    "publication_year: "
+                    f"{cli_module._display_value(literature.publication_year)}",
+                    block,
+                )
+                self.assertIn(
+                    f"DOI: {cli_module._display_value(literature.doi)}",
+                    block,
+                )
+                self.assertIn(
+                    f"PMID: {cli_module._display_value(literature.pmid)}",
+                    block,
+                )
+                self.assertIn(
+                    f"title_similarity: {candidate.title_similarity}",
+                    block,
+                )
+                expected_reasons = "、".join(
+                    cli_module._DUPLICATE_REASON_LABELS[reason]
+                    for reason in candidate.match_reasons
+                )
+                self.assertIn(f"一致理由: {expected_reasons}", block)
+        self.assertIn("文献登録を中止しました。", outputs)
+        for literature_id, expected in existing_before.items():
+            self.assertEqual(
+                get_literature(self.connection, literature_id),
+                expected,
+            )
+
+    def test_duplicate_candidate_can_be_registered_as_separate_record(
+        self,
+    ) -> None:
+        existing_id = self.add_record(
+            "Duplicate continue",
+            authors="Existing author",
+            doi="10.1000/continue",
+            pmid="00123",
+        )
+        tag_id = create_tag(self.connection, "existing-duplicate-tag")
+        attach_tag_to_literature(self.connection, existing_id, tag_id)
+        usage_id = create_usage_history(
+            self.connection,
+            existing_id,
+            "existing-use",
+        )
+        existing_before = get_literature(self.connection, existing_id)
+
+        _, _, outputs = self.run_with_actions(
+            self.registration_actions(
+                title="Duplicate continue",
+                authors="New author",
+                doi="DOI:10.1000/CONTINUE",
+                pmid="PMID: 001 23",
+            )
+        )
+
+        records = list_literature(self.connection)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0], existing_before)
+        self.assertNotEqual(records[1].id, existing_id)
+        self.assertEqual(records[1].authors, "New author")
+        self.assertEqual(records[1].doi, "10.1000/continue")
+        self.assertEqual(records[1].pmid, "00123")
+        self.assertIn("警告: 重複候補があります。", outputs)
+        self.assertIn("文献を登録しました。", outputs)
+        self.assertEqual(
+            [
+                tuple(row)
+                for row in self.connection.execute(
+                    "SELECT id, name FROM tags"
+                ).fetchall()
+            ],
+            [(tag_id, "existing-duplicate-tag")],
+        )
+        self.assertEqual(
+            [
+                tuple(row)
+                for row in self.connection.execute(
+                    """
+                    SELECT literature_id, tag_id
+                    FROM literature_tags
+                    """
+                ).fetchall()
+            ],
+            [(existing_id, tag_id)],
+        )
+        self.assertEqual(
+            [
+                tuple(row)
+                for row in self.connection.execute(
+                    """
+                    SELECT id, literature_id, usage_type
+                    FROM usage_history
+                    """
+                ).fetchall()
+            ],
+            [(usage_id, existing_id, "existing-use")],
+        )
+
+    def test_duplicate_formatter_preserves_unknown_reasons_and_nulls(
+        self,
+    ) -> None:
+        candidate = DuplicateCandidate(
+            literature=Literature(
+                id=7,
+                title="Unknown reason",
+                publication_year=None,
+                doi=None,
+                pmid=None,
+            ),
+            match_reasons=("doi", "future_reason"),
+            title_similarity=0.25,
+        )
+
+        formatted = cli_module._format_duplicate_candidate(candidate)
+
+        self.assertIn("既存文献ID: 7", formatted)
+        self.assertIn("publication_year: 未登録", formatted)
+        self.assertIn("DOI: 未登録", formatted)
+        self.assertIn("PMID: 未登録", formatted)
+        self.assertIn("一致理由: DOI一致、future_reason", formatted)
+        self.assertIn("title_similarity: 0.25", formatted)
+
+    def test_confirmation_trims_and_loops_without_recursion(self) -> None:
+        invalid_count = 1200
+        actions = [
+            "3",
+            *self.registration_values(title="Confirmation loop"),
+            "",
+            "invalid",
+            *(["9"] * invalid_count),
+            " 1 ",
+            "0",
+        ]
+
+        _, feeder, outputs = self.run_with_actions(actions)
+
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_CONFIRMATION_MESSAGE),
+            invalid_count + 2,
+        )
+        self.assertEqual(len(list_literature(self.connection)), 1)
+        self.assertEqual(
+            feeder.prompts.count("選択してください: "),
+            invalid_count + 5,
+        )
+
+    def test_confirmation_zero_with_whitespace_cancels_without_writing(
+        self,
+    ) -> None:
+        before = self.table_snapshot()
+
+        _, _, outputs = self.run_with_actions(
+            self.registration_actions(
+                title="Whitespace cancel",
+                confirmation=" \t0\n ",
+            )
+        )
+
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertIn("文献登録を中止しました。", outputs)
+
+    def test_registration_input_interruptions_exit_once_without_writing(
+        self,
+    ) -> None:
+        cases = (
+            ["3", EOFError("title EOF")],
+            ["3", "Title", KeyboardInterrupt()],
+            [
+                "3",
+                *self.registration_values(title="Confirmation EOF"),
+                EOFError("confirm EOF"),
+            ],
+            [
+                "3",
+                *self.registration_values(title="Confirmation interrupt"),
+                KeyboardInterrupt(),
+            ],
+        )
+
+        for actions in cases:
+            with self.subTest(action_count=len(actions)):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+                with patch.object(cli_module, "add_literature") as added:
+                    result = run_cli(
+                        self.connection,
+                        input_func=InputFeeder(actions),
+                        output_func=outputs.append,
+                    )
+                self.assertIsNone(result)
+                added.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertEqual(outputs.count("CLIを終了します。"), 1)
+
+    def test_registration_unexpected_input_exceptions_propagate(self) -> None:
+        cases = (
+            (
+                ValueError("registration input value"),
+                ["3"],
+            ),
+            (
+                sqlite3.OperationalError("registration input sqlite"),
+                ["3", "Title"],
+            ),
+            (
+                ValueError("confirmation input value"),
+                [
+                    "3",
+                    *self.registration_values(title="Confirmation value"),
+                ],
+            ),
+            (
+                RuntimeError("confirmation input runtime"),
+                [
+                    "3",
+                    *self.registration_values(title="Confirmation runtime"),
+                ],
+            ),
+            (
+                sqlite3.OperationalError("confirmation input sqlite"),
+                [
+                    "3",
+                    *self.registration_values(title="Confirmation sqlite"),
+                ],
+            ),
+        )
+
+        for expected, prefix in cases:
+            with self.subTest(exception=str(expected)):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+                with patch.object(cli_module, "add_literature") as added:
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder([*prefix, expected]),
+                            output_func=outputs.append,
+                        )
+                self.assertIs(raised.exception, expected)
+                added.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertNotIn(
+                    "データベースエラーが発生しました。",
+                    outputs,
+                )
+                self.assertFalse(
+                    any(
+                        item.startswith("登録エラー: ")
+                        for item in outputs
+                    )
+                )
+                self.assertNotIn("CLIを終了します。", outputs)
+                self.assertEqual(
+                    self.connection.execute("SELECT 1").fetchone()[0],
+                    1,
+                )
+
+    def test_registration_title_input_runtime_error_propagates(self) -> None:
+        expected = RuntimeError("registration title input runtime")
+        before = self.table_snapshot()
+        outputs: list[str] = []
+
+        with (
+            patch.object(
+                cli_module,
+                "find_duplicate_candidates",
+            ) as duplicate_check,
+            patch.object(cli_module, "add_literature") as added,
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                run_cli(
+                    self.connection,
+                    input_func=InputFeeder(["3", expected]),
+                    output_func=outputs.append,
+                )
+
+        self.assertIs(raised.exception, expected)
+        duplicate_check.assert_not_called()
+        added.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertFalse(
+            any(item.startswith("登録エラー: ") for item in outputs)
+        )
+        self.assertNotIn("データベースエラーが発生しました。", outputs)
+        self.assertNotIn("CLIを終了します。", outputs)
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
+
+    def test_blank_title_error_output_exceptions_propagate(self) -> None:
+        for expected in (
+            RuntimeError("blank title output runtime"),
+            EOFError("blank title output EOF"),
+            KeyboardInterrupt(),
+        ):
+            with self.subTest(exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+
+                def output_func(message: str) -> None:
+                    outputs.append(message)
+                    if message == "入力エラー: タイトルは必須です。":
+                        raise expected
+
+                with (
+                    patch.object(
+                        cli_module,
+                        "find_duplicate_candidates",
+                    ) as duplicate_check,
+                    patch.object(cli_module, "add_literature") as added,
+                ):
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(["3", ""]),
+                            output_func=output_func,
+                        )
+
+                self.assertIs(raised.exception, expected)
+                duplicate_check.assert_not_called()
+                added.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertEqual(
+                    outputs.count("入力エラー: タイトルは必須です。"),
+                    1,
+                )
+                self.assertNotIn("CLIを終了します。", outputs)
+                self.assertFalse(
+                    any(
+                        item.startswith("登録エラー: ")
+                        for item in outputs
+                    )
+                )
+                self.assertNotIn(
+                    "データベースエラーが発生しました。",
+                    outputs,
+                )
+
+    def test_registration_output_exceptions_propagate_before_add(self) -> None:
+        for expected in (
+            ValueError("registration output value"),
+            KeyboardInterrupt(),
+        ):
+            with self.subTest(exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+
+                def output_func(message: str) -> None:
+                    outputs.append(message)
+                    if message == "重複候補はありません。":
+                        raise expected
+
+                with patch.object(cli_module, "add_literature") as added:
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(
+                                [
+                                    "3",
+                                    *self.registration_values(
+                                        title="Output failure"
+                                    ),
+                                ]
+                            ),
+                            output_func=output_func,
+                        )
+                self.assertIs(raised.exception, expected)
+                added.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertNotIn(
+                    "データベースエラーが発生しました。",
+                    outputs,
+                )
+
+    def test_registration_rejects_active_transaction_before_input(self) -> None:
+        pending_cursor = self.connection.execute(
+            "INSERT INTO literature (title) VALUES (?)",
+            ("Pending before registration",),
+        )
+        pending_id = pending_cursor.lastrowid
+        self.assertTrue(self.connection.in_transaction)
+        with (
+            patch.object(cli_module, "Literature") as literature_class,
+            patch.object(
+                cli_module,
+                "find_duplicate_candidates",
+            ) as duplicate_check,
+            patch.object(cli_module, "add_literature") as added,
+        ):
+            _, feeder, outputs = self.run_with_actions(["3", "0"])
+
+        literature_class.assert_not_called()
+        duplicate_check.assert_not_called()
+        added.assert_not_called()
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM literature WHERE id = ?",
+                (pending_id,),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            feeder.prompts,
+            ["選択してください: ", "選択してください: "],
+        )
+        self.assertIn(cli_module._ACTIVE_TRANSACTION_MESSAGE, outputs)
+        self.connection.rollback()
+
+    def test_registration_rechecks_transaction_immediately_before_add(
+        self,
+    ) -> None:
+        feeder = InputFeeder(
+            [
+                "3",
+                *self.registration_values(title="Late transaction"),
+                "1",
+                "0",
+            ]
+        )
+
+        def begin_before_confirmation_returns(prompt: str) -> str:
+            value = feeder(prompt)
+            if (
+                prompt == "選択してください: "
+                and value == "1"
+                and len(feeder.prompts) == 30
+            ):
+                self.connection.execute("BEGIN")
+            return value
+
+        outputs: list[str] = []
+        with patch.object(cli_module, "add_literature") as added:
+            result = run_cli(
+                self.connection,
+                input_func=begin_before_confirmation_returns,
+                output_func=outputs.append,
+            )
+
+        self.assertIsNone(result)
+        added.assert_not_called()
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM literature"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertIn(cli_module._ACTIVE_TRANSACTION_MESSAGE, outputs)
+        self.connection.rollback()
+
+    def test_transaction_rejection_does_not_commit_rollback_or_close(
+        self,
+    ) -> None:
+        tracking_path = self.directory / "registration-tracking.db"
+        initialize_database(tracking_path)
+        connection = sqlite3.connect(
+            tracking_path,
+            factory=TrackingConnection,
+        )
+        self.addCleanup(sqlite3.Connection.close, connection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(
+            connection,
+            "PRAGMA foreign_keys = ON",
+        )
+        connection.execute(
+            "INSERT INTO literature (title) VALUES (?)",
+            ("Pending lifecycle record",),
+        )
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+
+        _, _, outputs = self.run_with_actions(
+            ["3", "0"],
+            connection=connection,
+        )
+
+        self.assertEqual(connection.commit_calls, 0)
+        self.assertEqual(connection.rollback_calls, 0)
+        self.assertEqual(connection.close_calls, 0)
+        self.assertTrue(connection.in_transaction)
+        self.assertEqual(
+            connection.execute(
+                "SELECT COUNT(*) FROM literature"
+            ).fetchone()[0],
+            1,
+        )
+        self.assertIn(cli_module._ACTIVE_TRANSACTION_MESSAGE, outputs)
+        sqlite3.Connection.rollback(connection)
+
+    def test_duplicate_api_exception_boundaries(self) -> None:
+        api_exceptions = (
+            ValueError("duplicate value"),
+            sqlite3.OperationalError("duplicate sqlite"),
+            RuntimeError("duplicate runtime"),
+            EOFError("duplicate EOF"),
+            KeyboardInterrupt(),
+        )
+
+        for expected in api_exceptions:
+            with self.subTest(exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+                actions = [
+                    "3",
+                    *self.registration_values(
+                        title=f"Duplicate API {type(expected).__name__}"
+                    ),
+                ]
+                if isinstance(expected, ValueError):
+                    actions.append("0")
+                with (
+                    patch.object(
+                        cli_module,
+                        "find_duplicate_candidates",
+                        side_effect=expected,
+                    ),
+                    patch.object(cli_module, "add_literature") as added,
+                ):
+                    if isinstance(expected, ValueError):
+                        result = run_cli(
+                            self.connection,
+                            input_func=InputFeeder(actions),
+                            output_func=outputs.append,
+                        )
+                        self.assertIsNone(result)
+                        self.assertTrue(
+                            any(
+                                item.startswith("登録エラー: ")
+                                for item in outputs
+                            )
+                        )
+                    else:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+                        self.assertIs(raised.exception, expected)
+                added.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                if isinstance(expected, sqlite3.Error):
+                    self.assertIn(
+                        "データベースエラーが発生しました。",
+                        outputs,
+                    )
+                elif not isinstance(expected, ValueError):
+                    self.assertNotIn(
+                        "データベースエラーが発生しました。",
+                        outputs,
+                    )
+
+    def test_add_api_exception_boundaries(self) -> None:
+        api_exceptions = (
+            ValueError("add value"),
+            sqlite3.OperationalError("add sqlite"),
+            RuntimeError("add runtime"),
+            EOFError("add EOF"),
+            KeyboardInterrupt(),
+        )
+
+        for expected in api_exceptions:
+            with self.subTest(exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+                actions = [
+                    "3",
+                    *self.registration_values(
+                        title=f"Add API {type(expected).__name__}"
+                    ),
+                    "1",
+                ]
+                if isinstance(expected, ValueError):
+                    actions.append("0")
+                with patch.object(
+                    cli_module,
+                    "add_literature",
+                    side_effect=expected,
+                ):
+                    if isinstance(expected, ValueError):
+                        result = run_cli(
+                            self.connection,
+                            input_func=InputFeeder(actions),
+                            output_func=outputs.append,
+                        )
+                        self.assertIsNone(result)
+                        self.assertTrue(
+                            any(
+                                item.startswith("登録エラー: ")
+                                for item in outputs
+                            )
+                        )
+                    else:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+                        self.assertIs(raised.exception, expected)
+                self.assertEqual(self.table_snapshot(), before)
+                if isinstance(expected, sqlite3.Error):
+                    self.assertIn(
+                        "データベースエラーが発生しました。",
+                        outputs,
+                    )
+                elif not isinstance(expected, ValueError):
+                    self.assertNotIn(
+                        "データベースエラーが発生しました。",
+                        outputs,
+                    )
+
+    def test_success_output_failure_preserves_committed_literature(
+        self,
+    ) -> None:
+        tracking_path = self.directory / "success-output-tracking.db"
+        initialize_database(tracking_path)
+        connection = sqlite3.connect(
+            tracking_path,
+            factory=TrackingConnection,
+        )
+        self.addCleanup(sqlite3.Connection.close, connection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(
+            connection,
+            "PRAGMA foreign_keys = ON",
+        )
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        expected = RuntimeError("success output failure")
+        outputs: list[str] = []
+
+        def output_func(message: str) -> None:
+            outputs.append(message)
+            if message == "文献を登録しました。":
+                raise expected
+
+        with patch.object(
+            cli_module,
+            "add_literature",
+            wraps=add_literature,
+        ) as added:
+            with self.assertRaises(RuntimeError) as raised:
+                run_cli(
+                    connection,
+                    input_func=InputFeeder(
+                        [
+                            "3",
+                            *self.registration_values(
+                                title="Committed before output failure"
+                            ),
+                            "1",
+                        ]
+                    ),
+                    output_func=output_func,
+                )
+
+        self.assertIs(raised.exception, expected)
+        added.assert_called_once()
+        records = list_literature(connection)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].title, "Committed before output failure")
+        self.assertFalse(connection.in_transaction)
+        self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+        self.assertEqual(connection.rollback_calls, 0)
+        self.assertEqual(connection.close_calls, 0)
+        self.assertEqual(outputs.count("文献を登録しました。"), 1)
+        self.assertFalse(
+            any(item.startswith("登録エラー: ") for item in outputs)
+        )
+        self.assertNotIn("データベースエラーが発生しました。", outputs)
+        self.assertNotIn("CLIを終了します。", outputs)
+
+    def test_real_sqlite_insert_failure_rolls_back_and_is_rethrown(
+        self,
+    ) -> None:
+        tracking_path = self.directory / "insert-failure-tracking.db"
+        initialize_database(tracking_path)
+        connection = sqlite3.connect(
+            tracking_path,
+            factory=TrackingConnection,
+        )
+        self.addCleanup(sqlite3.Connection.close, connection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(
+            connection,
+            "PRAGMA foreign_keys = ON",
+        )
+        existing_id = add_literature(
+            connection,
+            Literature(title="Existing before forced failure"),
+        )
+        connection.execute(
+            """
+            CREATE TRIGGER reject_forced_cli_insert
+            BEFORE INSERT ON literature
+            WHEN NEW.title = 'Forced SQLite failure'
+            BEGIN
+                SELECT RAISE(ABORT, 'forced insert failure');
+            END
+            """
+        )
+        connection.commit()
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        self.assertFalse(connection.in_transaction)
+        existing_before = get_literature(connection, existing_id)
+        outputs: list[str] = []
+        api_errors: list[sqlite3.Error] = []
+
+        def tracked_add(
+            connection: sqlite3.Connection,
+            literature: Literature,
+        ) -> int:
+            try:
+                return add_literature(connection, literature)
+            except sqlite3.Error as error:
+                api_errors.append(error)
+                raise
+
+        with patch.object(
+            cli_module,
+            "add_literature",
+            side_effect=tracked_add,
+        ) as added:
+            with self.assertRaises(sqlite3.Error) as raised:
+                run_cli(
+                    connection,
+                    input_func=InputFeeder(
+                        [
+                            "3",
+                            *self.registration_values(
+                                title="Forced SQLite failure"
+                            ),
+                            "1",
+                        ]
+                    ),
+                    output_func=outputs.append,
+                )
+
+        added.assert_called_once()
+        self.assertEqual(len(api_errors), 1)
+        self.assertIs(raised.exception, api_errors[0])
+        self.assertEqual(
+            connection.execute(
+                "SELECT COUNT(*) FROM literature "
+                "WHERE title = ?",
+                ("Forced SQLite failure",),
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            get_literature(connection, existing_id),
+            existing_before,
+        )
+        self.assertFalse(connection.in_transaction)
+        self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+        self.assertEqual(connection.rollback_calls, 0)
+        self.assertEqual(connection.close_calls, 0)
+        self.assertEqual(
+            outputs.count("データベースエラーが発生しました。"),
+            1,
+        )
+        self.assertFalse(
+            any(item.startswith("登録エラー: ") for item in outputs)
+        )
+        self.assertNotIn("CLIを終了します。", outputs)
+
+    def test_database_error_output_failure_propagates_output_exception(
+        self,
+    ) -> None:
+        database_error = sqlite3.OperationalError("duplicate database")
+        output_error = ValueError("database error output")
+
+        def output_func(message: str) -> None:
+            if message == "データベースエラーが発生しました。":
+                raise output_error
+
+        with patch.object(
+            cli_module,
+            "find_duplicate_candidates",
+            side_effect=database_error,
+        ):
+            with self.assertRaises(ValueError) as raised:
+                run_cli(
+                    self.connection,
+                    input_func=InputFeeder(
+                        [
+                            "3",
+                            *self.registration_values(
+                                title="DB error output"
+                            ),
+                        ]
+                    ),
+                    output_func=output_func,
+                )
+
+        self.assertIs(raised.exception, output_error)
+
+    def test_candidate_display_sqlite_error_is_not_api_database_error(
+        self,
+    ) -> None:
+        expected = sqlite3.OperationalError("candidate output")
+        outputs: list[str] = []
+
+        def output_func(message: str) -> None:
+            outputs.append(message)
+            if message == "重複候補はありません。":
+                raise expected
+
+        with patch.object(cli_module, "add_literature") as added:
+            with self.assertRaises(sqlite3.OperationalError) as raised:
+                run_cli(
+                    self.connection,
+                    input_func=InputFeeder(
+                        [
+                            "3",
+                            *self.registration_values(
+                                title="Candidate output boundary"
+                            ),
+                        ]
+                    ),
+                    output_func=output_func,
+                )
+
+        self.assertIs(raised.exception, expected)
+        added.assert_not_called()
+        self.assertNotIn("データベースエラーが発生しました。", outputs)
+
+    def test_success_changes_only_literature_and_preserves_schema_state(
+        self,
+    ) -> None:
+        self.connection.execute("PRAGMA user_version = 81")
+        schema_before = self.schema_snapshot()
+        schema_version_before = self.connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = self.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+
+        self.run_with_actions(
+            self.registration_actions(title="Schema-safe registration")
+        )
+
+        self.assertEqual(len(list_literature(self.connection)), 1)
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA schema_version").fetchone()[0],
+            schema_version_before,
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            user_version_before,
+        )
+        for table in ("tags", "literature_tags", "usage_history"):
+            self.assertEqual(
+                self.connection.execute(
+                    f"SELECT COUNT(*) FROM {table}"
+                ).fetchone()[0],
+                0,
+            )
+        self.assertFalse(self.connection.in_transaction)
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
 
     def test_cli_preserves_tables_schema_pragmas_and_transaction_state(
         self,

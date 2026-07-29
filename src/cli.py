@@ -1,11 +1,12 @@
-"""Interactive read-only CLI for listing and searching literature."""
+"""Interactive CLI for listing, searching, and registering literature."""
 
 import sqlite3
 from collections.abc import Callable, Sequence
 from typing import Optional
 
+from src.duplicates import DuplicateCandidate, find_duplicate_candidates
 from src.models import Literature
-from src.repository import list_literature
+from src.repository import add_literature, list_literature
 from src.search import search_literature
 
 
@@ -13,12 +14,16 @@ _MAIN_MENU = """理学療法文献ライブラリ
 
 1. 文献一覧
 2. 文献検索
+3. 文献登録
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
-_INVALID_MENU_MESSAGE = "入力エラー: 0、1、2のいずれかを選択してください。"
+_INVALID_MENU_MESSAGE = "入力エラー: 0、1、2、3のいずれかを選択してください。"
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
 _RECORD_SEPARATOR = "-" * 40
+_AI_SUMMARY_STATUSES = ("未作成", "未確認", "確認済み", "修正済み")
+_VERIFICATION_STATUSES = ("未確認", "一部確認", "確認済み", "要確認")
+_ADOPTION_STATUSES = ("未判定", "採用候補", "採用", "除外")
 
 _SEARCH_PROMPTS = (
     ("keyword", "キーワード（空欄で指定なし）: "),
@@ -27,37 +32,84 @@ _SEARCH_PROMPTS = (
     ("publication_type", "publication_type（空欄で指定なし）: "),
     (
         "verification_status",
-        "verification_status（未確認・一部確認・確認済み・要確認、"
+        f"verification_status（{'・'.join(_VERIFICATION_STATUSES)}、"
         "空欄で指定なし）: ",
     ),
     (
         "adoption_status",
-        "adoption_status（未判定・採用候補・採用・除外、"
+        f"adoption_status（{'・'.join(_ADOPTION_STATUSES)}、"
         "空欄で指定なし）: ",
     ),
     (
         "ai_summary_status",
-        "ai_summary_status（未作成・未確認・確認済み・修正済み、"
+        f"ai_summary_status（{'・'.join(_AI_SUMMARY_STATUSES)}、"
         "空欄で指定なし）: ",
     ),
     ("rating", "rating（1〜5、空欄で指定なし）: "),
     ("usage_type", "usage_type（空欄で指定なし）: "),
 )
 
-
-class _InputTerminated(Exception):
-    """Signal an EOF or interrupt raised only while calling input_func."""
+_REGISTRATION_PROMPTS = (
+    ("title", "title（必須）: "),
+    ("authors", "authors（空欄で未登録）: "),
+    ("journal", "journal（空欄で未登録）: "),
+    ("publication_year", "publication_year（空欄で未登録）: "),
+    ("volume", "volume（空欄で未登録）: "),
+    ("issue", "issue（空欄で未登録）: "),
+    ("pages", "pages（空欄で未登録）: "),
+    ("doi", "doi（空欄で未登録）: "),
+    ("pmid", "pmid（空欄で未登録）: "),
+    ("url", "url（空欄で未登録）: "),
+    ("language", "language（空欄で未登録）: "),
+    ("publication_type", "publication_type（空欄で未登録）: "),
+    ("abstract", "abstract（空欄で未登録）: "),
+    ("pdf_path", "pdf_path（空欄で未登録）: "),
+    ("personal_summary", "personal_summary（空欄で未登録）: "),
+    ("ai_summary", "ai_summary（空欄で未登録）: "),
+    (
+        "ai_summary_status",
+        f"ai_summary_status（{'・'.join(_AI_SUMMARY_STATUSES)}、"
+        "空欄で既定値）: ",
+    ),
+    ("general_note", "general_note（空欄で未登録）: "),
+    ("key_findings", "key_findings（空欄で未登録）: "),
+    ("methods_note", "methods_note（空欄で未登録）: "),
+    ("clinical_note", "clinical_note（空欄で未登録）: "),
+    ("limitation_note", "limitation_note（空欄で未登録）: "),
+    ("relevance_note", "relevance_note（空欄で未登録）: "),
+    ("evidence_level", "evidence_level（空欄で未登録）: "),
+    (
+        "verification_status",
+        f"verification_status（{'・'.join(_VERIFICATION_STATUSES)}、"
+        "空欄で既定値）: ",
+    ),
+    (
+        "adoption_status",
+        f"adoption_status（{'・'.join(_ADOPTION_STATUSES)}、"
+        "空欄で既定値）: ",
+    ),
+    ("exclusion_reason", "exclusion_reason（空欄で未登録）: "),
+    ("rating", "rating（1〜5、空欄で未登録）: "),
+)
+_REGISTRATION_CONFIRMATION_MENU = """1. この内容で登録する
+0. 登録を中止する"""
+_INVALID_CONFIRMATION_MESSAGE = "入力エラー: 0、1のいずれかを選択してください。"
+_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中は文献を登録できません。"
+)
+_DUPLICATE_REASON_LABELS = {
+    "doi": "DOI一致",
+    "pmid": "PMID一致",
+    "title": "タイトル類似",
+}
 
 
 def _read_input(
     input_func: Callable[[str], str],
     prompt: str,
 ) -> str:
-    """Call input_func and translate only its normal termination exceptions."""
-    try:
-        return input_func(prompt)
-    except (EOFError, KeyboardInterrupt) as error:
-        raise _InputTerminated from error
+    """Call the configured input function without translating exceptions."""
+    return input_func(prompt)
 
 
 def _display_value(value: object) -> str:
@@ -78,6 +130,38 @@ def _format_literature(literature: Literature) -> str:
         ("verification_status", literature.verification_status),
         ("adoption_status", literature.adoption_status),
         ("rating", literature.rating),
+    )
+    return "\n".join(
+        f"{label}: {_display_value(value)}" for label, value in fields
+    )
+
+
+def _format_registration_literature(literature: Literature) -> str:
+    """Format every user-supplied literature field in input order."""
+    fields = tuple(
+        (field_name, getattr(literature, field_name))
+        for field_name, _ in _REGISTRATION_PROMPTS
+    )
+    return "\n".join(
+        f"{label}: {_display_value(value)}" for label, value in fields
+    )
+
+
+def _format_duplicate_candidate(candidate: DuplicateCandidate) -> str:
+    """Format one duplicate candidate without changing or reordering it."""
+    literature = candidate.literature
+    reason_labels = (
+        _DUPLICATE_REASON_LABELS.get(reason, reason)
+        for reason in candidate.match_reasons
+    )
+    fields = (
+        ("既存文献ID", literature.id),
+        ("title", literature.title),
+        ("publication_year", literature.publication_year),
+        ("DOI", literature.doi),
+        ("PMID", literature.pmid),
+        ("一致理由", "、".join(reason_labels)),
+        ("title_similarity", candidate.title_similarity),
     )
     return "\n".join(
         f"{label}: {_display_value(value)}" for label, value in fields
@@ -122,6 +206,138 @@ def _optional_ascii_integer(
     return int(normalized)
 
 
+def _display_duplicate_candidates(
+    candidates: Sequence[DuplicateCandidate],
+    output_func: Callable[[str], object],
+) -> None:
+    """Display duplicate warnings and candidates in the API-provided order."""
+    if not candidates:
+        output_func("重複候補はありません。")
+        return
+
+    output_func("警告: 重複候補があります。")
+    output_func(
+        "候補は自動統合されず、既存文献も変更されません。"
+    )
+    for candidate in candidates:
+        output_func(_RECORD_SEPARATOR)
+        output_func(_format_duplicate_candidate(candidate))
+    output_func(_RECORD_SEPARATOR)
+
+
+def _prepare_registration_values(
+    raw_values: dict[str, str],
+) -> dict[str, object]:
+    """Apply the registration flow's CLI-only conversions and defaults."""
+    values: dict[str, object] = {
+        field_name: _optional_text(raw_values[field_name])
+        for field_name, _ in _REGISTRATION_PROMPTS
+    }
+    values["publication_year"] = _optional_ascii_integer(
+        raw_values["publication_year"],
+        "publication_year",
+    )
+    values["rating"] = _optional_ascii_integer(
+        raw_values["rating"],
+        "rating",
+    )
+    ai_summary = values["ai_summary"]
+    values["ai_summary_status"] = (
+        values["ai_summary_status"]
+        or ("未確認" if ai_summary is not None else "未作成")
+    )
+    values["verification_status"] = (
+        values["verification_status"] or "未確認"
+    )
+    values["adoption_status"] = values["adoption_status"] or "未判定"
+    return values
+
+
+def _run_registration(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Collect, review, duplicate-check, and optionally register literature."""
+    if connection.in_transaction:
+        output_func(_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    raw_values: dict[str, str] = {}
+    for field_name, prompt in _REGISTRATION_PROMPTS:
+        try:
+            value = _read_input(input_func, prompt)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        raw_values[field_name] = value
+        if field_name == "title" and not value.strip():
+            output_func("入力エラー: タイトルは必須です。")
+            return False
+
+    try:
+        values = _prepare_registration_values(raw_values)
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        literature = Literature(**values)
+    except ValueError as error:
+        output_func(f"登録エラー: {error}")
+        return False
+
+    output_func("登録内容を確認してください。")
+    output_func(_format_registration_literature(literature))
+    output_func("DOIとPMIDは登録時に標準形式へ正規化されます。")
+
+    try:
+        candidates = find_duplicate_candidates(
+            connection,
+            title=literature.title,
+            doi=literature.doi,
+            pmid=literature.pmid,
+        )
+    except ValueError as error:
+        output_func(f"登録エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    _display_duplicate_candidates(candidates, output_func)
+    output_func(_REGISTRATION_CONFIRMATION_MENU)
+    while True:
+        try:
+            confirmation_input = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = confirmation_input.strip()
+        if confirmation == "0":
+            output_func("文献登録を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    if connection.in_transaction:
+        output_func(_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        literature_id = add_literature(connection, literature)
+    except ValueError as error:
+        output_func(f"登録エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    output_func("文献を登録しました。")
+    output_func(f"ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+    return False
+
+
 def _run_search(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
@@ -129,11 +345,12 @@ def _run_search(
 ) -> bool:
     """Collect all Step 8A filters, execute the existing search, and display it."""
     raw_values: dict[str, str] = {}
-    try:
-        for field_name, prompt in _SEARCH_PROMPTS:
-            raw_values[field_name] = _read_input(input_func, prompt)
-    except _InputTerminated:
-        return True
+    for field_name, prompt in _SEARCH_PROMPTS:
+        try:
+            value = _read_input(input_func, prompt)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        raw_values[field_name] = value
 
     keyword = _optional_text(raw_values["keyword"])
     tag = _optional_text(raw_values["tag"])
@@ -185,12 +402,12 @@ def run_cli(
     input_func: Callable[[str], str] = input,
     output_func: Callable[[str], object] = print,
 ) -> None:
-    """Run the Step 8A read-only menu using an existing SQLite connection."""
+    """Run the interactive menu using an existing SQLite connection."""
     while True:
         output_func(_MAIN_MENU)
         try:
             choice = _read_input(input_func, _MENU_PROMPT)
-        except _InputTerminated:
+        except (EOFError, KeyboardInterrupt):
             output_func(_EXIT_MESSAGE)
             return None
         choice = choice.strip()
@@ -198,7 +415,7 @@ def run_cli(
         if choice == "0":
             output_func(_EXIT_MESSAGE)
             return None
-        if choice not in {"1", "2"}:
+        if choice not in {"1", "2", "3"}:
             output_func(_INVALID_MENU_MESSAGE)
             continue
 
@@ -213,6 +430,17 @@ def run_cli(
                 output_func,
                 empty_message="登録されている文献はありません。",
             )
-        elif _run_search(connection, input_func, output_func):
+        elif choice == "2" and _run_search(
+            connection,
+            input_func,
+            output_func,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None
+        elif choice == "3" and _run_registration(
+            connection,
+            input_func,
+            output_func,
+        ):
             output_func(_EXIT_MESSAGE)
             return None

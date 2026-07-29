@@ -165,12 +165,14 @@ Completed sub-step:
 
 Current sub-step:
 
-- Step 8B: remaining interactive CLI preparation
+- Step 8B-1: literature registration and duplicate-candidate confirmation
   - Status: in progress
-  - Step 8B-0: literature write validation and identifier normalization is
-    currently in progress
-  - Step 8B-1 begins only after Step 8B-0 is completed
-  - Step 8B-2 has not started
+  - Step 8B-0: literature repository write validation and DOI/PMID
+    normalization
+    - Status: completed and pushed
+  - Step 8B-1: literature registration and duplicate-candidate confirmation
+    is currently in progress
+  - Step 8B-2: literature editing and deletion has not started
 
 Planned scope:
 
