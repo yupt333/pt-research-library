@@ -1,4 +1,4 @@
-"""Interactive CLI for listing, searching, registering, and editing literature."""
+"""Interactive CLI for literature listing, search, registration, edit, and deletion."""
 
 import sqlite3
 from collections.abc import Callable, Sequence
@@ -8,7 +8,9 @@ from src.duplicates import DuplicateCandidate, find_duplicate_candidates
 from src.models import Literature
 from src.repository import (
     add_literature,
+    delete_literature,
     get_literature,
+    get_literature_related_counts,
     list_literature,
     update_literature,
 )
@@ -21,10 +23,11 @@ _MAIN_MENU = """理学療法文献ライブラリ
 2. 文献検索
 3. 文献登録
 4. 文献編集
+5. 文献削除
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
 _INVALID_MENU_MESSAGE = (
-    "入力エラー: 0、1、2、3、4のいずれかを選択してください。"
+    "入力エラー: 0、1、2、3、4、5のいずれかを選択してください。"
 )
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
@@ -142,6 +145,11 @@ _EDIT_CONFIRMATION_MENU = """1. この内容で更新する
 0. 更新を中止する"""
 _EDIT_ACTIVE_TRANSACTION_MESSAGE = (
     "アクティブなトランザクション中は文献を編集できません。"
+)
+_DELETE_CONFIRMATION_MENU = """1. 削除手続きを続ける
+0. 削除を中止する"""
+_DELETE_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中は文献を削除できません。"
 )
 _DUPLICATE_REASON_LABELS = {
     "doi": "DOI一致",
@@ -553,6 +561,139 @@ def _run_edit(
     return False
 
 
+def _run_delete(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Display deletion impact and require two confirmations before deletion."""
+    if connection.in_transaction:
+        output_func(_DELETE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        raw_literature_id = _read_input(
+            input_func,
+            "文献ID（ASCII数字）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id,
+            "文献ID",
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        literature = get_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if literature is None:
+        output_func("対象文献が見つかりません。")
+        return False
+
+    output_func("現在の文献情報:")
+    output_func(_format_edit_literature(literature))
+
+    try:
+        related_counts = get_literature_related_counts(
+            connection,
+            literature_id,
+        )
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if related_counts is None:
+        output_func(
+            "現在の文献情報を表示した後に対象文献が存在しなくなりました。"
+        )
+        return False
+
+    output_func("削除対象と影響を確認してください。")
+    output_func(f"ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+    output_func(f"タグ関連付け数: {related_counts['tag_count']}")
+    output_func(f"使用履歴数: {related_counts['usage_history_count']}")
+    output_func("関連件数は確認時点の値です。")
+    output_func("警告: 文献レコードは削除されます。")
+    output_func("タグとの関連付けは削除されます。")
+    output_func("使用履歴は削除されます。")
+    output_func("タグレコード自体は残ります。")
+    output_func("pdf_pathが示す外部ファイルは削除されません。")
+    output_func("CLIには自動復元機能がありません。")
+
+    output_func(_DELETE_CONFIRMATION_MENU)
+    while True:
+        try:
+            raw_confirmation = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = raw_confirmation.strip()
+        if confirmation == "0":
+            output_func("文献削除を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    final_confirmation_prompt = (
+        f"削除を確定するため文献ID {literature_id} を再入力してください\n"
+        "（0で中止）: "
+    )
+    invalid_final_confirmation_message = (
+        f"入力エラー: 文献ID {literature_id} または0を入力してください。"
+    )
+    while True:
+        try:
+            raw_confirmed_id = _read_input(
+                input_func,
+                final_confirmation_prompt,
+            )
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmed_id_text = raw_confirmed_id.strip()
+        if confirmed_id_text == "0":
+            output_func("文献削除を中止しました。")
+            return False
+        try:
+            confirmed_id = _required_positive_ascii_integer(
+                raw_confirmed_id,
+                "文献ID",
+            )
+        except ValueError:
+            output_func(invalid_final_confirmation_message)
+            continue
+        if confirmed_id == literature_id:
+            break
+        output_func(invalid_final_confirmation_message)
+
+    if connection.in_transaction:
+        output_func(_DELETE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        deleted = delete_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if not deleted:
+        output_func("確認後に対象文献が存在しなくなりました。")
+        return False
+
+    output_func("文献を削除しました。")
+    output_func(f"ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+    return False
+
+
 def _run_search(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
@@ -630,7 +771,7 @@ def run_cli(
         if choice == "0":
             output_func(_EXIT_MESSAGE)
             return None
-        if choice not in {"1", "2", "3", "4"}:
+        if choice not in {"1", "2", "3", "4", "5"}:
             output_func(_INVALID_MENU_MESSAGE)
             continue
 
@@ -660,6 +801,13 @@ def run_cli(
             output_func(_EXIT_MESSAGE)
             return None
         elif choice == "4" and _run_edit(
+            connection,
+            input_func,
+            output_func,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None
+        elif choice == "5" and _run_delete(
             connection,
             input_func,
             output_func,

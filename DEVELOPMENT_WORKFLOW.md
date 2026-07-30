@@ -176,9 +176,12 @@ Current sub-step:
       confirmation, input and transaction safety, and repository-backed
       DOI/PMID normalization
   - Step 8B-2A: literature editing
-    - Status: current sub-step
+    - Status: completed and pushed
+    - Includes interactive single-field literature editing, complete current
+      record display, input and transaction safety, and repository-backed
+      validation and normalization
   - Step 8B-2B: literature deletion
-    - Status: not started
+    - Status: current sub-step, in progress
 
 Planned scope:
 

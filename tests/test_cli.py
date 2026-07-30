@@ -18,7 +18,9 @@ from src.repository import (
     attach_tag_to_literature,
     create_tag,
     create_usage_history,
+    delete_literature,
     get_literature,
+    get_literature_related_counts,
     list_literature,
     update_literature,
 )
@@ -181,6 +183,22 @@ class CliTestCase(unittest.TestCase):
             final_menu_choice,
         ]
 
+    @staticmethod
+    def delete_actions(
+        literature_id: int,
+        *,
+        confirmation: str = "1",
+        confirmed_id: str | None = None,
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "5",
+            str(literature_id),
+            confirmation,
+            str(literature_id) if confirmed_id is None else confirmed_id,
+            final_menu_choice,
+        ]
+
     def add_record(self, title: str, **values: object) -> int:
         return add_literature(
             self.connection,
@@ -316,6 +334,48 @@ class CliTestCase(unittest.TestCase):
         connection.close_calls = 0
         return connection, target_id, other_id
 
+    def create_tracking_delete_fixture(
+        self,
+        suffix: str,
+    ) -> tuple[TrackingConnection, int, int]:
+        database_path = self.directory / f"delete-exception-{suffix}.db"
+        initialize_database(database_path)
+        connection = sqlite3.connect(
+            database_path,
+            factory=TrackingConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(
+            connection,
+            "PRAGMA foreign_keys = ON",
+        )
+        target_id = add_literature(
+            connection,
+            Literature(
+                title="Delete exception matrix target",
+                authors="Target author",
+                pdf_path="/tmp/delete-exception-target.pdf",
+            ),
+        )
+        other_id = add_literature(
+            connection,
+            Literature(
+                title="Delete exception matrix other",
+                authors="Other author",
+            ),
+        )
+        shared_tag_id = create_tag(connection, "delete-shared-tag")
+        target_tag_id = create_tag(connection, "delete-target-tag")
+        attach_tag_to_literature(connection, target_id, shared_tag_id)
+        attach_tag_to_literature(connection, target_id, target_tag_id)
+        attach_tag_to_literature(connection, other_id, shared_tag_id)
+        create_usage_history(connection, target_id, "delete-target-use")
+        create_usage_history(connection, other_id, "delete-other-use")
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        return connection, target_id, other_id
+
     def schema_snapshot(self) -> list[tuple[object, ...]]:
         return [
             tuple(row)
@@ -338,8 +398,8 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("2. 文献検索", outputs[0])
         self.assertIn("3. 文献登録", outputs[0])
         self.assertIn("4. 文献編集", outputs[0])
+        self.assertIn("5. 文献削除", outputs[0])
         self.assertIn("0. 終了", outputs[0])
-        self.assertNotIn("文献削除", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
 
@@ -360,7 +420,7 @@ class CliTestCase(unittest.TestCase):
         _, feeder, outputs = self.run_with_actions(actions)
 
         error_message = (
-            "入力エラー: 0、1、2、3、4のいずれかを選択してください。"
+            "入力エラー: 0、1、2、3、4、5のいずれかを選択してください。"
         )
         self.assertEqual(
             outputs.count(error_message),
@@ -2826,9 +2886,9 @@ class CliTestCase(unittest.TestCase):
         _, _, outputs = self.run_with_actions(["invalid", "0"])
 
         self.assertIn("4. 文献編集", outputs[0])
-        self.assertNotIn("文献削除", outputs[0])
+        self.assertIn("5. 文献削除", outputs[0])
         self.assertIn(cli_module._INVALID_MENU_MESSAGE, outputs)
-        for choice in ("0", "1", "2", "3", "4"):
+        for choice in ("0", "1", "2", "3", "4", "5"):
             with self.subTest(choice=choice):
                 self.assertIn(choice, cli_module._INVALID_MENU_MESSAGE)
 
@@ -4862,6 +4922,1591 @@ class CliTestCase(unittest.TestCase):
         )
         self.assertFalse(self.connection.in_transaction)
         self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
+
+    def test_delete_success_uses_repository_apis_and_isolated_cascades(
+        self,
+    ) -> None:
+        external_pdf = self.directory / "synthetic external.pdf"
+        external_pdf.write_text("must remain", encoding="utf-8")
+        target_id = self.add_record(
+            "Delete target",
+            authors="Target Author",
+            journal="Target Journal",
+            pdf_path=str(external_pdf),
+            general_note="Target note",
+        )
+        other_id = self.add_record(
+            "Delete other",
+            authors="Other Author",
+            general_note="Other note",
+        )
+        shared_tag_id = create_tag(self.connection, "shared-delete")
+        target_tag_id = create_tag(self.connection, "target-only-delete")
+        other_tag_id = create_tag(self.connection, "other-only-delete")
+        for literature_id, tag_id in (
+            (target_id, shared_tag_id),
+            (target_id, target_tag_id),
+            (other_id, shared_tag_id),
+            (other_id, other_tag_id),
+        ):
+            attach_tag_to_literature(
+                self.connection,
+                literature_id,
+                tag_id,
+            )
+        create_usage_history(self.connection, target_id, "target-use-1")
+        create_usage_history(self.connection, target_id, "target-use-2")
+        create_usage_history(self.connection, other_id, "other-use")
+        self.connection.execute("PRAGMA user_version = 83")
+        target_before = get_literature(self.connection, target_id)
+        other_before = get_literature(self.connection, other_id)
+        schema_before = self.schema_snapshot()
+        schema_version_before = self.connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = self.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "get_literature_related_counts",
+                wraps=get_literature_related_counts,
+            ) as counted,
+            patch.object(
+                cli_module,
+                "delete_literature",
+                wraps=delete_literature,
+            ) as deleted,
+        ):
+            _, feeder, outputs = self.run_with_actions(
+                self.delete_actions(target_id)
+            )
+
+        retrieved.assert_called_once_with(self.connection, target_id)
+        counted.assert_called_once_with(self.connection, target_id)
+        deleted.assert_called_once_with(self.connection, target_id)
+        self.assertIsNone(get_literature(self.connection, target_id))
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM literature_tags WHERE literature_id = ?",
+                (target_id,),
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM usage_history WHERE literature_id = ?",
+                (target_id,),
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(get_literature(self.connection, other_id), other_before)
+        self.assertEqual(
+            {
+                row["tag_id"]
+                for row in self.connection.execute(
+                    """
+                    SELECT tag_id
+                    FROM literature_tags
+                    WHERE literature_id = ?
+                    """,
+                    (other_id,),
+                ).fetchall()
+            },
+            {shared_tag_id, other_tag_id},
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM usage_history WHERE literature_id = ?",
+                (other_id,),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            {
+                row["id"]
+                for row in self.connection.execute(
+                    "SELECT id FROM tags"
+                ).fetchall()
+            },
+            {shared_tag_id, target_tag_id, other_tag_id},
+        )
+        self.assertTrue(external_pdf.is_file())
+        self.assertEqual(
+            external_pdf.read_text(encoding="utf-8"),
+            "must remain",
+        )
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA schema_version").fetchone()[0],
+            schema_version_before,
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            user_version_before,
+        )
+        self.assertFalse(self.connection.in_transaction)
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
+        self.assertEqual(
+            feeder.prompts,
+            [
+                "選択してください: ",
+                "文献ID（ASCII数字）: ",
+                "選択してください: ",
+                (
+                    f"削除を確定するため文献ID {target_id} "
+                    "を再入力してください\n（0で中止）: "
+                ),
+                "選択してください: ",
+            ],
+        )
+        displayed = "\n".join(outputs)
+        self.assertIn(cli_module._format_edit_literature(target_before), outputs)
+        for expected in (
+            "削除対象と影響を確認してください。",
+            f"ID: {target_id}",
+            "title: Delete target",
+            "タグ関連付け数: 2",
+            "使用履歴数: 2",
+            "関連件数は確認時点の値です。",
+            "文献レコードは削除されます。",
+            "タグとの関連付けは削除されます。",
+            "使用履歴は削除されます。",
+            "タグレコード自体は残ります。",
+            "pdf_pathが示す外部ファイルは削除されません。",
+            "CLIには自動復元機能がありません。",
+            "文献を削除しました。",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, displayed)
+        self.assertEqual(
+            sum("理学療法文献ライブラリ" in item for item in outputs),
+            2,
+        )
+
+    def test_delete_displays_all_31_saved_fields_without_mutation_on_cancel(
+        self,
+    ) -> None:
+        literature_id = self.add_record(
+            '削除表示 "Full", Study',
+            authors='Author A, "Author B"\nAuthor C',
+            journal="Journal 内部  空白",
+            publication_year=2025,
+            volume="12",
+            issue="3",
+            pages="101-112",
+            doi="10.1000/delete-display",
+            pmid="00123",
+            url="https://example.test/delete",
+            language="日本語 / English",
+            publication_type="原著",
+            abstract='Abstract, "quoted"\nsecond line',
+            pdf_path="/tmp/delete literature.pdf",
+            personal_summary="自分の要約",
+            ai_summary="AI要約\n未確認本文",
+            ai_summary_status="修正済み",
+            general_note="一般メモ",
+            key_findings="主要な結果",
+            methods_note="方法メモ",
+            clinical_note="臨床メモ",
+            limitation_note="限界メモ",
+            relevance_note="関連メモ",
+            evidence_level="Level II",
+            verification_status="要確認",
+            adoption_status="採用候補",
+            exclusion_reason="除外理由",
+            rating=4,
+        )
+        self.connection.execute(
+            "UPDATE literature SET doi = ?, pmid = ? WHERE id = ?",
+            (
+                " DOI:10.1000/Mixed Case ",
+                " PMID: 001 23 ",
+                literature_id,
+            ),
+        )
+        self.connection.commit()
+        before_record = get_literature(self.connection, literature_id)
+        before_tables = self.table_snapshot()
+
+        with patch.object(cli_module, "delete_literature") as deleted:
+            _, _, outputs = self.run_with_actions(
+                [
+                    "5",
+                    str(literature_id),
+                    "0",
+                    "0",
+                ]
+            )
+
+        deleted.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before_tables)
+        self.assertEqual(
+            get_literature(self.connection, literature_id),
+            before_record,
+        )
+        displayed = next(item for item in outputs if item.startswith("id: "))
+        expected_fields = (
+            "id",
+            *_REGISTRATION_FIELDS,
+            "created_at",
+            "updated_at",
+        )
+        positions = [
+            displayed.index(f"{'' if index == 0 else chr(10)}{field}: ")
+            for index, field in enumerate(expected_fields)
+        ]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(
+            displayed,
+            cli_module._format_edit_literature(before_record),
+        )
+        self.assertIn(" DOI:10.1000/Mixed Case ", displayed)
+        self.assertIn(" PMID: 001 23 ", displayed)
+        self.assertIn("文献削除を中止しました。", outputs)
+
+        null_id = self.add_record("Delete NULL display")
+        null_before = get_literature(self.connection, null_id)
+        _, _, null_outputs = self.run_with_actions(
+            ["5", str(null_id), "0", "0"]
+        )
+        null_displayed = cli_module._format_edit_literature(null_before)
+        self.assertIn(null_displayed, null_outputs)
+        self.assertIn("authors: 未登録", null_displayed)
+        self.assertIn("rating: 未登録", null_displayed)
+        self.assertNotIn("authors: None", null_displayed)
+
+    def test_delete_id_validation_and_existing_maximum_id_contract(
+        self,
+    ) -> None:
+        self.add_record("First delete ID")
+        maximum_id = self.add_record("Maximum delete ID")
+        invalid_values = (
+            "",
+            "0",
+            "+1",
+            "-1",
+            "1.5",
+            "1e3",
+            "１",
+            "١",
+            "id",
+            "1x",
+        )
+
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                before = self.table_snapshot()
+                with (
+                    patch.object(cli_module, "get_literature") as retrieved,
+                    patch.object(
+                        cli_module,
+                        "get_literature_related_counts",
+                    ) as counted,
+                    patch.object(cli_module, "delete_literature") as deleted,
+                ):
+                    _, _, outputs = self.run_with_actions(
+                        ["5", invalid_value, "0"]
+                    )
+
+                retrieved.assert_not_called()
+                counted.assert_not_called()
+                deleted.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertTrue(
+                    any(
+                        item.startswith("入力エラー: ")
+                        and "文献ID" in item
+                        and "ASCII" in item
+                        for item in outputs
+                    )
+                )
+
+        first_before = get_literature(self.connection, 1)
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "delete_literature",
+                wraps=delete_literature,
+            ) as deleted,
+        ):
+            _, _, outputs = self.run_with_actions(
+                [
+                    "5",
+                    f" \t00{maximum_id}\n ",
+                    " 1 ",
+                    f" 000{maximum_id} ",
+                    "0",
+                ]
+            )
+
+        retrieved.assert_called_once_with(self.connection, maximum_id)
+        deleted.assert_called_once_with(self.connection, maximum_id)
+        self.assertIsNone(get_literature(self.connection, maximum_id))
+        self.assertEqual(get_literature(self.connection, 1), first_before)
+        self.assertIn("文献を削除しました。", outputs)
+
+    def test_delete_unknown_id_and_related_count_disappearance_stop_safely(
+        self,
+    ) -> None:
+        before = self.table_snapshot()
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "get_literature_related_counts",
+            ) as counted,
+            patch.object(cli_module, "delete_literature") as deleted,
+        ):
+            _, feeder, outputs = self.run_with_actions(["5", "999999", "0"])
+
+        retrieved.assert_called_once_with(self.connection, 999999)
+        counted.assert_not_called()
+        deleted.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertIn("対象文献が見つかりません。", outputs)
+        self.assertEqual(len(feeder.prompts), 3)
+
+        literature_id = self.add_record("Counts disappeared")
+        record_before = get_literature(self.connection, literature_id)
+        with (
+            patch.object(
+                cli_module,
+                "get_literature_related_counts",
+                return_value=None,
+            ) as counted,
+            patch.object(cli_module, "delete_literature") as deleted,
+        ):
+            _, feeder, outputs = self.run_with_actions(
+                ["5", str(literature_id), "0"]
+            )
+
+        counted.assert_called_once_with(self.connection, literature_id)
+        deleted.assert_not_called()
+        self.assertEqual(
+            get_literature(self.connection, literature_id),
+            record_before,
+        )
+        self.assertIn(
+            "現在の文献情報を表示した後に対象文献が存在しなくなりました。",
+            outputs,
+        )
+        self.assertEqual(len(feeder.prompts), 3)
+
+    def test_delete_related_count_combinations_use_api_values_at_confirmation(
+        self,
+    ) -> None:
+        combinations = ((0, 0), (2, 0), (0, 2), (2, 3))
+
+        for index, (tag_count, usage_count) in enumerate(combinations):
+            with self.subTest(
+                tag_count=tag_count,
+                usage_count=usage_count,
+            ):
+                literature_id = self.add_record(f"Related counts {index}")
+                for tag_index in range(tag_count):
+                    tag_id = create_tag(
+                        self.connection,
+                        f"delete-count-{index}-{tag_index}",
+                    )
+                    attach_tag_to_literature(
+                        self.connection,
+                        literature_id,
+                        tag_id,
+                    )
+                for history_index in range(usage_count):
+                    create_usage_history(
+                        self.connection,
+                        literature_id,
+                        f"delete-count-use-{index}-{history_index}",
+                    )
+                before = self.table_snapshot()
+
+                with (
+                    patch.object(
+                        cli_module,
+                        "get_literature_related_counts",
+                        wraps=get_literature_related_counts,
+                    ) as counted,
+                    patch.object(cli_module, "delete_literature") as deleted,
+                ):
+                    _, _, outputs = self.run_with_actions(
+                        ["5", str(literature_id), "0", "0"]
+                    )
+
+                counted.assert_called_once_with(
+                    self.connection,
+                    literature_id,
+                )
+                deleted.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                displayed = "\n".join(outputs)
+                self.assertIn(
+                    f"タグ関連付け数: {tag_count}",
+                    displayed,
+                )
+                self.assertIn(
+                    f"使用履歴数: {usage_count}",
+                    displayed,
+                )
+                self.assertIn("関連件数は確認時点の値です。", outputs)
+
+        sentinel_id = self.add_record("Unmodified API count values")
+        with (
+            patch.object(
+                cli_module,
+                "get_literature_related_counts",
+                return_value={
+                    "tag_count": -2,
+                    "usage_history_count": -3,
+                },
+            ),
+            patch.object(cli_module, "delete_literature") as deleted,
+        ):
+            _, _, outputs = self.run_with_actions(
+                ["5", str(sentinel_id), "0", "0"]
+            )
+        deleted.assert_not_called()
+        self.assertIn("タグ関連付け数: -2", outputs)
+        self.assertIn("使用履歴数: -3", outputs)
+
+    def test_delete_confirmation_loops_cancel_and_final_id_contract(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Delete confirmation loops")
+        before = self.table_snapshot()
+        invalid_count = 1200
+        with patch.object(cli_module, "delete_literature") as deleted:
+            _, feeder, outputs = self.run_with_actions(
+                [
+                    "5",
+                    str(literature_id),
+                    "",
+                    "invalid",
+                    *(["9"] * invalid_count),
+                    " \t0\n ",
+                    "0",
+                ]
+            )
+
+        deleted.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_CONFIRMATION_MESSAGE),
+            invalid_count + 2,
+        )
+        self.assertIn("文献削除を中止しました。", outputs)
+        self.assertEqual(
+            feeder.prompts.count("選択してください: "),
+            invalid_count + 5,
+        )
+
+        final_invalid_values = (
+            "",
+            "+1",
+            "-1",
+            "1.5",
+            "1e3",
+            "１",
+            "١",
+            "id",
+            "1x",
+            str(literature_id + 100),
+        )
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "delete_literature",
+                wraps=delete_literature,
+            ) as deleted,
+        ):
+            _, _, outputs = self.run_with_actions(
+                [
+                    "5",
+                    str(literature_id),
+                    "1",
+                    *final_invalid_values,
+                    *(["invalid"] * invalid_count),
+                    f" 000{literature_id} ",
+                    "0",
+                ]
+            )
+
+        retrieved.assert_called_once_with(self.connection, literature_id)
+        deleted.assert_called_once_with(self.connection, literature_id)
+        self.assertIsNone(get_literature(self.connection, literature_id))
+        final_error = (
+            f"入力エラー: 文献ID {literature_id} または0を入力してください。"
+        )
+        self.assertEqual(
+            outputs.count(final_error),
+            len(final_invalid_values) + invalid_count,
+        )
+
+        cancelled_id = self.add_record("Final ID cancel")
+        other_id = self.add_record("Must not become delete target")
+        cancelled_before = self.table_snapshot()
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(cli_module, "delete_literature") as deleted,
+        ):
+            _, _, outputs = self.run_with_actions(
+                [
+                    "5",
+                    str(cancelled_id),
+                    "1",
+                    str(other_id),
+                    " 0 ",
+                    "0",
+                ]
+            )
+        retrieved.assert_called_once_with(self.connection, cancelled_id)
+        deleted.assert_not_called()
+        self.assertEqual(self.table_snapshot(), cancelled_before)
+        self.assertIn("文献削除を中止しました。", outputs)
+
+    def test_delete_input_exception_matrix_preserves_state_and_boundaries(
+        self,
+    ) -> None:
+        positions = (
+            (
+                "literature_id",
+                lambda literature_id: ["5"],
+                (
+                    "選択してください: ",
+                    "文献ID（ASCII数字）: ",
+                ),
+            ),
+            (
+                "first_confirmation",
+                lambda literature_id: ["5", str(literature_id)],
+                (
+                    "選択してください: ",
+                    "文献ID（ASCII数字）: ",
+                    "選択してください: ",
+                ),
+            ),
+            (
+                "final_id_confirmation",
+                lambda literature_id: [
+                    "5",
+                    str(literature_id),
+                    "1",
+                ],
+                (
+                    "選択してください: ",
+                    "文献ID（ASCII数字）: ",
+                    "選択してください: ",
+                ),
+            ),
+        )
+        exception_types = (
+            ("EOFError", EOFError),
+            ("KeyboardInterrupt", KeyboardInterrupt),
+            ("ValueError", ValueError),
+            ("RuntimeError", RuntimeError),
+            ("sqlite3.Error", sqlite3.Error),
+        )
+
+        for position_index, (
+            position,
+            action_prefix,
+            expected_prompt_prefix,
+        ) in enumerate(positions):
+            for exception_index, (
+                exception_name,
+                exception_type,
+            ) in enumerate(exception_types):
+                with self.subTest(
+                    position=position,
+                    exception=exception_name,
+                ):
+                    connection, target_id, other_id = (
+                        self.create_tracking_delete_fixture(
+                            f"input-{position_index}-{exception_index}"
+                        )
+                    )
+                    try:
+                        before = self.table_snapshot_for(connection)
+                        target_before = get_literature(connection, target_id)
+                        other_before = get_literature(connection, other_id)
+                        expected = exception_type(
+                            f"{position} {exception_name} input failure"
+                        )
+                        feeder = InputFeeder(
+                            [*action_prefix(target_id), expected]
+                        )
+                        outputs: list[str] = []
+
+                        with patch.object(
+                            cli_module,
+                            "delete_literature",
+                        ) as deleted:
+                            if isinstance(
+                                expected,
+                                (EOFError, KeyboardInterrupt),
+                            ):
+                                result = run_cli(
+                                    connection,
+                                    input_func=feeder,
+                                    output_func=outputs.append,
+                                )
+                                self.assertIsNone(result)
+                                self.assertEqual(
+                                    outputs.count("CLIを終了します。"),
+                                    1,
+                                )
+                            else:
+                                with self.assertRaises(
+                                    exception_type
+                                ) as raised:
+                                    run_cli(
+                                        connection,
+                                        input_func=feeder,
+                                        output_func=outputs.append,
+                                    )
+                                self.assertIs(raised.exception, expected)
+                                self.assertNotIn(
+                                    "CLIを終了します。",
+                                    outputs,
+                                )
+
+                        deleted.assert_not_called()
+                        self.assertEqual(
+                            feeder.prompts[: len(expected_prompt_prefix)],
+                            list(expected_prompt_prefix),
+                        )
+                        if position == "final_id_confirmation":
+                            self.assertIn(
+                                (
+                                    f"削除を確定するため文献ID {target_id} "
+                                    "を再入力してください\n（0で中止）: "
+                                ),
+                                feeder.prompts,
+                            )
+                        self.assertEqual(
+                            self.table_snapshot_for(connection),
+                            before,
+                        )
+                        self.assertEqual(
+                            get_literature(connection, target_id),
+                            target_before,
+                        )
+                        self.assertEqual(
+                            get_literature(connection, other_id),
+                            other_before,
+                        )
+                        self.assertFalse(
+                            any(
+                                item.startswith("入力エラー: ")
+                                for item in outputs
+                            )
+                        )
+                        self.assertNotIn(
+                            "データベースエラーが発生しました。",
+                            outputs,
+                        )
+                        self.assertEqual(connection.commit_calls, 0)
+                        self.assertEqual(connection.rollback_calls, 0)
+                        self.assertEqual(connection.close_calls, 0)
+                        self.assertFalse(connection.in_transaction)
+                        self.assertEqual(
+                            connection.execute("SELECT 1").fetchone()[0],
+                            1,
+                        )
+                    finally:
+                        if connection.in_transaction:
+                            sqlite3.Connection.rollback(connection)
+                        sqlite3.Connection.close(connection)
+
+    def test_delete_rejects_initial_transaction_without_input_or_apis(
+        self,
+    ) -> None:
+        connection, target_id, other_id = (
+            self.create_tracking_delete_fixture("initial-transaction")
+        )
+        try:
+            marker_cursor = connection.execute(
+                "INSERT INTO tags (name) VALUES (?)",
+                ("pending-delete-initial-marker",),
+            )
+            marker_id = marker_cursor.lastrowid
+            target_before = get_literature(connection, target_id)
+            other_before = get_literature(connection, other_id)
+            self.assertTrue(connection.in_transaction)
+            feeder = InputFeeder(["5", "0"])
+            outputs: list[str] = []
+
+            with (
+                patch.object(cli_module, "get_literature") as retrieved,
+                patch.object(
+                    cli_module,
+                    "get_literature_related_counts",
+                ) as counted,
+                patch.object(cli_module, "delete_literature") as deleted,
+            ):
+                result = run_cli(
+                    connection,
+                    input_func=feeder,
+                    output_func=outputs.append,
+                )
+
+            self.assertIsNone(result)
+            retrieved.assert_not_called()
+            counted.assert_not_called()
+            deleted.assert_not_called()
+            self.assertEqual(
+                feeder.prompts,
+                ["選択してください: ", "選択してください: "],
+            )
+            self.assertIn(
+                cli_module._DELETE_ACTIVE_TRANSACTION_MESSAGE,
+                outputs,
+            )
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (marker_id,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                get_literature(connection, target_id),
+                target_before,
+            )
+            self.assertEqual(
+                get_literature(connection, other_id),
+                other_before,
+            )
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_delete_rechecks_transaction_with_pending_marker_before_write(
+        self,
+    ) -> None:
+        connection, target_id, other_id = (
+            self.create_tracking_delete_fixture("late-transaction")
+        )
+        try:
+            before = self.table_snapshot_for(connection)
+            target_before = get_literature(connection, target_id)
+            other_before = get_literature(connection, other_id)
+            feeder = InputFeeder(
+                ["5", str(target_id), "1", str(target_id), "0"]
+            )
+            marker_ids: list[int] = []
+
+            def input_func(prompt: str) -> str:
+                value = feeder(prompt)
+                if prompt.startswith("削除を確定するため文献ID"):
+                    self.assertFalse(connection.in_transaction)
+                    cursor = connection.execute(
+                        "INSERT INTO tags (name) VALUES (?)",
+                        ("pending-delete-late-marker",),
+                    )
+                    marker_ids.append(cursor.lastrowid)
+                    self.assertTrue(connection.in_transaction)
+                return value
+
+            outputs: list[str] = []
+            with patch.object(cli_module, "delete_literature") as deleted:
+                result = run_cli(
+                    connection,
+                    input_func=input_func,
+                    output_func=outputs.append,
+                )
+
+            self.assertIsNone(result)
+            deleted.assert_not_called()
+            self.assertEqual(len(marker_ids), 1)
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (marker_ids[0],),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                get_literature(connection, target_id),
+                target_before,
+            )
+            self.assertEqual(
+                get_literature(connection, other_id),
+                other_before,
+            )
+            self.assertIn(
+                cli_module._DELETE_ACTIVE_TRANSACTION_MESSAGE,
+                outputs,
+            )
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+
+            sqlite3.Connection.rollback(connection)
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (marker_ids[0],),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(self.table_snapshot_for(connection), before)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_delete_repository_api_exception_boundaries(self) -> None:
+        api_names = (
+            "get_literature",
+            "get_literature_related_counts",
+            "delete_literature",
+        )
+        exception_types = (
+            sqlite3.OperationalError,
+            RuntimeError,
+            ValueError,
+            EOFError,
+            KeyboardInterrupt,
+        )
+
+        for api_index, api_name in enumerate(api_names):
+            for exception_index, exception_type in enumerate(exception_types):
+                with self.subTest(
+                    api=api_name,
+                    exception=exception_type.__name__,
+                ):
+                    connection, target_id, other_id = (
+                        self.create_tracking_delete_fixture(
+                            f"api-{api_index}-{exception_index}"
+                        )
+                    )
+                    try:
+                        before = self.table_snapshot_for(connection)
+                        expected = exception_type(
+                            f"{api_name} {exception_type.__name__}"
+                        )
+                        actions: list[object] = ["5", str(target_id)]
+                        if api_name == "delete_literature":
+                            actions.extend(["1", str(target_id)])
+                        outputs: list[str] = []
+
+                        with patch.object(
+                            cli_module,
+                            api_name,
+                            side_effect=expected,
+                        ) as failed_api:
+                            with self.assertRaises(
+                                exception_type
+                            ) as raised:
+                                run_cli(
+                                    connection,
+                                    input_func=InputFeeder(actions),
+                                    output_func=outputs.append,
+                                )
+
+                        self.assertIs(raised.exception, expected)
+                        failed_api.assert_called_once()
+                        self.assertEqual(
+                            self.table_snapshot_for(connection),
+                            before,
+                        )
+                        self.assertIsNotNone(
+                            get_literature(connection, target_id)
+                        )
+                        self.assertIsNotNone(
+                            get_literature(connection, other_id)
+                        )
+                        if isinstance(expected, sqlite3.Error):
+                            self.assertEqual(
+                                outputs.count(
+                                    "データベースエラーが発生しました。"
+                                ),
+                                1,
+                            )
+                        else:
+                            self.assertNotIn(
+                                "データベースエラーが発生しました。",
+                                outputs,
+                            )
+                        self.assertNotIn("CLIを終了します。", outputs)
+                        self.assertEqual(connection.commit_calls, 0)
+                        self.assertEqual(connection.rollback_calls, 0)
+                        self.assertEqual(connection.close_calls, 0)
+                        self.assertFalse(connection.in_transaction)
+                        self.assertEqual(
+                            connection.execute("SELECT 1").fetchone()[0],
+                            1,
+                        )
+                    finally:
+                        if connection.in_transaction:
+                            sqlite3.Connection.rollback(connection)
+                        sqlite3.Connection.close(connection)
+
+    def test_delete_database_error_output_failure_propagates_output_error(
+        self,
+    ) -> None:
+        for api_name in (
+            "get_literature",
+            "get_literature_related_counts",
+            "delete_literature",
+        ):
+            with self.subTest(api=api_name):
+                literature_id = self.add_record(f"DB output {api_name}")
+                database_error = sqlite3.OperationalError(
+                    f"{api_name} database error"
+                )
+                output_error = RuntimeError(
+                    f"{api_name} database output error"
+                )
+                actions: list[object] = ["5", str(literature_id)]
+                if api_name == "delete_literature":
+                    actions.extend(["1", str(literature_id)])
+
+                def output_func(message: str) -> None:
+                    if message == "データベースエラーが発生しました。":
+                        raise output_error
+
+                with patch.object(
+                    cli_module,
+                    api_name,
+                    side_effect=database_error,
+                ):
+                    with self.assertRaises(RuntimeError) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(actions),
+                            output_func=output_func,
+                        )
+
+                self.assertIs(raised.exception, output_error)
+                self.assertIsNot(raised.exception, database_error)
+                self.assertIsNotNone(
+                    get_literature(self.connection, literature_id)
+                )
+
+    def test_delete_false_reports_disappearance_once_without_retry(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Delete false")
+        before = self.table_snapshot()
+
+        with patch.object(
+            cli_module,
+            "delete_literature",
+            return_value=False,
+        ) as deleted:
+            _, _, outputs = self.run_with_actions(
+                self.delete_actions(literature_id)
+            )
+
+        deleted.assert_called_once_with(self.connection, literature_id)
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertIn("確認後に対象文献が存在しなくなりました。", outputs)
+        self.assertNotIn("文献を削除しました。", outputs)
+        self.assertEqual(
+            sum("理学療法文献ライブラリ" in item for item in outputs),
+            2,
+        )
+
+    def test_real_sqlite_delete_failure_rolls_back_and_rethrows_same_error(
+        self,
+    ) -> None:
+        connection, target_id, other_id = (
+            self.create_tracking_delete_fixture("real-sqlite-failure")
+        )
+        try:
+            connection.execute(
+                """
+                CREATE TRIGGER reject_forced_cli_delete
+                BEFORE DELETE ON literature
+                WHEN OLD.title = 'Delete exception matrix target'
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced delete failure');
+                END
+                """
+            )
+            connection.commit()
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            before = self.table_snapshot_for(connection)
+            target_before = get_literature(connection, target_id)
+            other_before = get_literature(connection, other_id)
+            api_errors: list[sqlite3.Error] = []
+            outputs: list[str] = []
+
+            def tracked_delete(
+                target_connection: sqlite3.Connection,
+                literature_id: int,
+            ) -> bool:
+                try:
+                    return delete_literature(
+                        target_connection,
+                        literature_id,
+                    )
+                except sqlite3.Error as error:
+                    api_errors.append(error)
+                    raise
+
+            with patch.object(
+                cli_module,
+                "delete_literature",
+                side_effect=tracked_delete,
+            ) as deleted:
+                with self.assertRaises(sqlite3.Error) as raised:
+                    run_cli(
+                        connection,
+                        input_func=InputFeeder(
+                            [
+                                "5",
+                                str(target_id),
+                                "1",
+                                str(target_id),
+                            ]
+                        ),
+                        output_func=outputs.append,
+                    )
+
+            deleted.assert_called_once_with(connection, target_id)
+            self.assertEqual(len(api_errors), 1)
+            self.assertIs(raised.exception, api_errors[0])
+            self.assertEqual(self.table_snapshot_for(connection), before)
+            self.assertEqual(
+                get_literature(connection, target_id),
+                target_before,
+            )
+            self.assertEqual(
+                get_literature(connection, other_id),
+                other_before,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM literature_tags "
+                    "WHERE literature_id = ?",
+                    (target_id,),
+                ).fetchone()[0],
+                2,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM usage_history "
+                    "WHERE literature_id = ?",
+                    (target_id,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM tags").fetchone()[0],
+                2,
+            )
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            self.assertEqual(
+                outputs.count("データベースエラーが発生しました。"),
+                1,
+            )
+            self.assertNotIn("文献を削除しました。", outputs)
+            self.assertNotIn("CLIを終了します。", outputs)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_delete_success_output_failure_keeps_committed_cascade(
+        self,
+    ) -> None:
+        connection, target_id, other_id = (
+            self.create_tracking_delete_fixture("success-output")
+        )
+        try:
+            target_tag_ids = {
+                row["tag_id"]
+                for row in connection.execute(
+                    """
+                    SELECT tag_id
+                    FROM literature_tags
+                    WHERE literature_id = ?
+                    """,
+                    (target_id,),
+                ).fetchall()
+            }
+            other_before = get_literature(connection, other_id)
+            other_related_before = {
+                "tags": [
+                    tuple(row)
+                    for row in connection.execute(
+                        """
+                        SELECT literature_id, tag_id
+                        FROM literature_tags
+                        WHERE literature_id = ?
+                        ORDER BY tag_id
+                        """,
+                        (other_id,),
+                    ).fetchall()
+                ],
+                "usage": [
+                    tuple(row)
+                    for row in connection.execute(
+                        """
+                        SELECT *
+                        FROM usage_history
+                        WHERE literature_id = ?
+                        ORDER BY id
+                        """,
+                        (other_id,),
+                    ).fetchall()
+                ],
+            }
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            expected = RuntimeError("delete success output failure")
+            outputs: list[str] = []
+
+            def output_func(message: str) -> None:
+                outputs.append(message)
+                if message == "文献を削除しました。":
+                    raise expected
+
+            with patch.object(
+                cli_module,
+                "delete_literature",
+                wraps=delete_literature,
+            ) as deleted:
+                with self.assertRaises(RuntimeError) as raised:
+                    run_cli(
+                        connection,
+                        input_func=InputFeeder(
+                            [
+                                "5",
+                                str(target_id),
+                                "1",
+                                str(target_id),
+                            ]
+                        ),
+                        output_func=output_func,
+                    )
+
+            self.assertIs(raised.exception, expected)
+            deleted.assert_called_once_with(connection, target_id)
+            self.assertIsNone(get_literature(connection, target_id))
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM literature_tags "
+                    "WHERE literature_id = ?",
+                    (target_id,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM usage_history "
+                    "WHERE literature_id = ?",
+                    (target_id,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                {
+                    row["id"]
+                    for row in connection.execute(
+                        "SELECT id FROM tags"
+                    ).fetchall()
+                },
+                target_tag_ids,
+            )
+            self.assertEqual(
+                get_literature(connection, other_id),
+                other_before,
+            )
+            self.assertEqual(
+                {
+                    "tags": [
+                        tuple(row)
+                        for row in connection.execute(
+                            """
+                            SELECT literature_id, tag_id
+                            FROM literature_tags
+                            WHERE literature_id = ?
+                            ORDER BY tag_id
+                            """,
+                            (other_id,),
+                        ).fetchall()
+                    ],
+                    "usage": [
+                        tuple(row)
+                        for row in connection.execute(
+                            """
+                            SELECT *
+                            FROM usage_history
+                            WHERE literature_id = ?
+                            ORDER BY id
+                            """,
+                            (other_id,),
+                        ).fetchall()
+                    ],
+                },
+                other_related_before,
+            )
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            self.assertEqual(
+                outputs.count("文献を削除しました。"),
+                1,
+            )
+            self.assertNotIn("データベースエラーが発生しました。", outputs)
+            self.assertNotIn("CLIを終了します。", outputs)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_delete_output_exception_matrix_preserves_stage_contracts(
+        self,
+    ) -> None:
+        cases = (
+            ("initial_transaction", "initial_transaction"),
+            ("invalid_id", "invalid_id"),
+            ("missing_literature", "missing"),
+            ("current_literature", "current"),
+            ("related_counts_missing", "counts_missing"),
+            ("impact_display", "impact"),
+            ("first_confirmation_invalid", "first_invalid"),
+            ("first_confirmation_cancel", "first_cancel"),
+            ("final_id_invalid", "final_invalid"),
+            ("final_id_cancel", "final_cancel"),
+            ("late_transaction", "late_transaction"),
+            ("get_database_error", "get_database_error"),
+            ("counts_database_error", "counts_database_error"),
+            ("delete_database_error", "delete_database_error"),
+            ("delete_false", "delete_false"),
+            ("delete_success", "delete_success"),
+        )
+
+        for case_index, (case_name, stage) in enumerate(cases):
+            with self.subTest(case=case_name):
+                connection, target_id, _ = (
+                    self.create_tracking_delete_fixture(
+                        f"output-{case_index}"
+                    )
+                )
+                try:
+                    literature = get_literature(connection, target_id)
+                    assert literature is not None
+                    before = self.table_snapshot_for(connection)
+                    expected = RuntimeError(
+                        f"{case_name} output failure"
+                    )
+                    get_return: Literature | None = literature
+                    counts_return: dict[str, int] | None = {
+                        "tag_count": 2,
+                        "usage_history_count": 1,
+                    }
+                    delete_return = True
+                    get_error: sqlite3.Error | None = None
+                    counts_error: sqlite3.Error | None = None
+                    delete_error: sqlite3.Error | None = None
+                    marker_name = f"pending-output-marker-{case_index}"
+
+                    if stage == "initial_transaction":
+                        connection.execute("BEGIN")
+                        actions: list[object] = ["5"]
+                        failing_message = (
+                            cli_module._DELETE_ACTIVE_TRANSACTION_MESSAGE
+                        )
+                    elif stage == "invalid_id":
+                        actions = ["5", "invalid"]
+                        failing_message = (
+                            "入力エラー: 文献IDは1以上の"
+                            "ASCII数字だけで入力してください。"
+                        )
+                    elif stage == "missing":
+                        get_return = None
+                        actions = ["5", "999999"]
+                        failing_message = "対象文献が見つかりません。"
+                    elif stage == "current":
+                        actions = ["5", str(target_id)]
+                        failing_message = (
+                            cli_module._format_edit_literature(literature)
+                        )
+                    elif stage == "counts_missing":
+                        counts_return = None
+                        actions = ["5", str(target_id)]
+                        failing_message = (
+                            "現在の文献情報を表示した後に"
+                            "対象文献が存在しなくなりました。"
+                        )
+                    elif stage == "impact":
+                        actions = ["5", str(target_id)]
+                        failing_message = (
+                            "削除対象と影響を確認してください。"
+                        )
+                    elif stage == "first_invalid":
+                        actions = ["5", str(target_id), "invalid"]
+                        failing_message = (
+                            cli_module._INVALID_CONFIRMATION_MESSAGE
+                        )
+                    elif stage == "first_cancel":
+                        actions = ["5", str(target_id), "0"]
+                        failing_message = "文献削除を中止しました。"
+                    elif stage == "final_invalid":
+                        actions = [
+                            "5",
+                            str(target_id),
+                            "1",
+                            "invalid",
+                        ]
+                        failing_message = (
+                            f"入力エラー: 文献ID {target_id} "
+                            "または0を入力してください。"
+                        )
+                    elif stage == "final_cancel":
+                        actions = ["5", str(target_id), "1", "0"]
+                        failing_message = "文献削除を中止しました。"
+                    elif stage == "late_transaction":
+                        actions = [
+                            "5",
+                            str(target_id),
+                            "1",
+                            str(target_id),
+                        ]
+                        failing_message = (
+                            cli_module._DELETE_ACTIVE_TRANSACTION_MESSAGE
+                        )
+                    elif stage == "get_database_error":
+                        get_error = sqlite3.OperationalError("get failure")
+                        actions = ["5", str(target_id)]
+                        failing_message = (
+                            "データベースエラーが発生しました。"
+                        )
+                    elif stage == "counts_database_error":
+                        counts_error = sqlite3.OperationalError(
+                            "counts failure"
+                        )
+                        actions = ["5", str(target_id)]
+                        failing_message = (
+                            "データベースエラーが発生しました。"
+                        )
+                    elif stage == "delete_database_error":
+                        delete_error = sqlite3.OperationalError(
+                            "delete failure"
+                        )
+                        actions = [
+                            "5",
+                            str(target_id),
+                            "1",
+                            str(target_id),
+                        ]
+                        failing_message = (
+                            "データベースエラーが発生しました。"
+                        )
+                    elif stage == "delete_false":
+                        delete_return = False
+                        actions = [
+                            "5",
+                            str(target_id),
+                            "1",
+                            str(target_id),
+                        ]
+                        failing_message = (
+                            "確認後に対象文献が存在しなくなりました。"
+                        )
+                    else:
+                        actions = [
+                            "5",
+                            str(target_id),
+                            "1",
+                            str(target_id),
+                        ]
+                        failing_message = "文献を削除しました。"
+
+                    feeder = InputFeeder(actions)
+
+                    def input_func(prompt: str) -> str:
+                        value = feeder(prompt)
+                        if (
+                            stage == "late_transaction"
+                            and prompt.startswith(
+                                "削除を確定するため文献ID"
+                            )
+                        ):
+                            connection.execute(
+                                "INSERT INTO tags (name) VALUES (?)",
+                                (marker_name,),
+                            )
+                        return value
+
+                    outputs: list[str] = []
+
+                    def output_func(message: str) -> None:
+                        outputs.append(message)
+                        if message == failing_message:
+                            raise expected
+
+                    with (
+                        patch.object(
+                            cli_module,
+                            "get_literature",
+                            return_value=get_return,
+                            side_effect=get_error,
+                        ) as retrieved,
+                        patch.object(
+                            cli_module,
+                            "get_literature_related_counts",
+                            return_value=counts_return,
+                            side_effect=counts_error,
+                        ) as counted,
+                        patch.object(
+                            cli_module,
+                            "delete_literature",
+                            return_value=delete_return,
+                            side_effect=delete_error,
+                        ) as deleted,
+                    ):
+                        with self.assertRaises(RuntimeError) as raised:
+                            run_cli(
+                                connection,
+                                input_func=input_func,
+                                output_func=output_func,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    self.assertEqual(outputs.count(failing_message), 1)
+                    if stage in {
+                        "delete_database_error",
+                        "delete_false",
+                        "delete_success",
+                    }:
+                        deleted.assert_called_once_with(
+                            connection,
+                            target_id,
+                        )
+                    else:
+                        deleted.assert_not_called()
+                    if stage in {"initial_transaction", "invalid_id"}:
+                        retrieved.assert_not_called()
+                    if stage in {
+                        "initial_transaction",
+                        "invalid_id",
+                        "missing",
+                        "current",
+                        "get_database_error",
+                    }:
+                        counted.assert_not_called()
+                    self.assertIsNotNone(
+                        sqlite3.Connection.execute(
+                            connection,
+                            "SELECT 1",
+                        ).fetchone()
+                    )
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                    self.assertNotIn("CLIを終了します。", outputs)
+                    if stage == "late_transaction":
+                        self.assertTrue(connection.in_transaction)
+                        self.assertEqual(
+                            connection.execute(
+                                "SELECT COUNT(*) FROM tags WHERE name = ?",
+                                (marker_name,),
+                            ).fetchone()[0],
+                            1,
+                        )
+                        sqlite3.Connection.rollback(connection)
+                        self.assertEqual(
+                            self.table_snapshot_for(connection),
+                            before,
+                        )
+                    else:
+                        self.assertEqual(
+                            self.table_snapshot_for(connection),
+                            before,
+                        )
+                finally:
+                    if connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
+
+    def test_delete_output_interruptions_are_not_input_interruptions(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Delete output interruption")
+
+        for expected in (
+            EOFError("delete impact output EOF"),
+            KeyboardInterrupt(),
+        ):
+            with self.subTest(exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+
+                def output_func(message: str) -> None:
+                    outputs.append(message)
+                    if message == "削除対象と影響を確認してください。":
+                        raise expected
+
+                with patch.object(
+                    cli_module,
+                    "delete_literature",
+                ) as deleted:
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(
+                                ["5", str(literature_id)]
+                            ),
+                            output_func=output_func,
+                        )
+
+                self.assertIs(raised.exception, expected)
+                deleted.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertNotIn("CLIを終了します。", outputs)
+                self.assertNotIn(
+                    "データベースエラーが発生しました。",
+                    outputs,
+                )
 
     def test_cli_creates_no_database_export_or_backup_artifacts(self) -> None:
         self.populate_search_records()
