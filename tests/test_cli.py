@@ -3,7 +3,7 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +20,7 @@ from src.repository import (
     create_usage_history,
     get_literature,
     list_literature,
+    update_literature,
 )
 from src.search import search_literature
 
@@ -162,6 +163,24 @@ class CliTestCase(unittest.TestCase):
             final_menu_choice,
         ]
 
+    @staticmethod
+    def edit_actions(
+        literature_id: int,
+        field_number: int,
+        new_value: str,
+        *,
+        confirmation: str = "1",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "4",
+            str(literature_id),
+            str(field_number),
+            new_value,
+            confirmation,
+            final_menu_choice,
+        ]
+
     def add_record(self, title: str, **values: object) -> int:
         return add_literature(
             self.connection,
@@ -233,7 +252,69 @@ class CliTestCase(unittest.TestCase):
                 ).fetchall()
             ]
             for table, ordering in order_by.items()
+            }
+
+    @staticmethod
+    def table_snapshot_for(
+        connection: sqlite3.Connection,
+    ) -> dict[str, list[tuple[object, ...]]]:
+        order_by = {
+            "literature": "id",
+            "tags": "id",
+            "literature_tags": "literature_id, tag_id",
+            "usage_history": "id",
         }
+        return {
+            table: [
+                tuple(row)
+                for row in connection.execute(
+                    f"SELECT * FROM {table} ORDER BY {ordering}"
+                ).fetchall()
+            ]
+            for table, ordering in order_by.items()
+        }
+
+    def create_tracking_edit_fixture(
+        self,
+        suffix: str,
+    ) -> tuple[TrackingConnection, int, int]:
+        database_path = self.directory / f"edit-exception-{suffix}.db"
+        initialize_database(database_path)
+        connection = sqlite3.connect(
+            database_path,
+            factory=TrackingConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(
+            connection,
+            "PRAGMA foreign_keys = ON",
+        )
+        target_id = add_literature(
+            connection,
+            Literature(
+                title="Exception matrix target",
+                authors="Before",
+                journal="Target journal",
+            ),
+        )
+        other_id = add_literature(
+            connection,
+            Literature(
+                title="Exception matrix other",
+                authors="Other author",
+            ),
+        )
+        tag_id = create_tag(connection, "exception-matrix-tag")
+        attach_tag_to_literature(connection, target_id, tag_id)
+        create_usage_history(
+            connection,
+            target_id,
+            "exception-matrix-use",
+        )
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        return connection, target_id, other_id
 
     def schema_snapshot(self) -> list[tuple[object, ...]]:
         return [
@@ -256,8 +337,8 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("1. 文献一覧", outputs[0])
         self.assertIn("2. 文献検索", outputs[0])
         self.assertIn("3. 文献登録", outputs[0])
+        self.assertIn("4. 文献編集", outputs[0])
         self.assertIn("0. 終了", outputs[0])
-        self.assertNotIn("文献編集", outputs[0])
         self.assertNotIn("文献削除", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
@@ -278,7 +359,9 @@ class CliTestCase(unittest.TestCase):
 
         _, feeder, outputs = self.run_with_actions(actions)
 
-        error_message = "入力エラー: 0、1、2、3のいずれかを選択してください。"
+        error_message = (
+            "入力エラー: 0、1、2、3、4のいずれかを選択してください。"
+        )
         self.assertEqual(
             outputs.count(error_message),
             invalid_count + 2,
@@ -2121,7 +2204,10 @@ class CliTestCase(unittest.TestCase):
             feeder.prompts,
             ["選択してください: ", "選択してください: "],
         )
-        self.assertIn(cli_module._ACTIVE_TRANSACTION_MESSAGE, outputs)
+        self.assertIn(
+            cli_module._REGISTRATION_ACTIVE_TRANSACTION_MESSAGE,
+            outputs,
+        )
         self.connection.rollback()
 
     def test_registration_rechecks_transaction_immediately_before_add(
@@ -2163,7 +2249,10 @@ class CliTestCase(unittest.TestCase):
             ).fetchone()[0],
             0,
         )
-        self.assertIn(cli_module._ACTIVE_TRANSACTION_MESSAGE, outputs)
+        self.assertIn(
+            cli_module._REGISTRATION_ACTIVE_TRANSACTION_MESSAGE,
+            outputs,
+        )
         self.connection.rollback()
 
     def test_transaction_rejection_does_not_commit_rollback_or_close(
@@ -2204,7 +2293,10 @@ class CliTestCase(unittest.TestCase):
             ).fetchone()[0],
             1,
         )
-        self.assertIn(cli_module._ACTIVE_TRANSACTION_MESSAGE, outputs)
+        self.assertIn(
+            cli_module._REGISTRATION_ACTIVE_TRANSACTION_MESSAGE,
+            outputs,
+        )
         sqlite3.Connection.rollback(connection)
 
     def test_duplicate_api_exception_boundaries(self) -> None:
@@ -2729,6 +2821,2047 @@ class CliTestCase(unittest.TestCase):
         finally:
             observer.close()
         sqlite3.Connection.rollback(connection)
+
+    def test_edit_menu_and_invalid_main_choice_contract(self) -> None:
+        _, _, outputs = self.run_with_actions(["invalid", "0"])
+
+        self.assertIn("4. 文献編集", outputs[0])
+        self.assertNotIn("文献削除", outputs[0])
+        self.assertIn(cli_module._INVALID_MENU_MESSAGE, outputs)
+        for choice in ("0", "1", "2", "3", "4"):
+            with self.subTest(choice=choice):
+                self.assertIn(choice, cli_module._INVALID_MENU_MESSAGE)
+
+    def test_edit_id_validation_rejects_non_positive_or_non_ascii_forms(
+        self,
+    ) -> None:
+        self.add_record("ID validation")
+        invalid_values = (
+            "",
+            "0",
+            "+1",
+            "-1",
+            "1.5",
+            "1e3",
+            "１",
+            "١",
+            "id",
+            "1x",
+        )
+
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                before = self.table_snapshot()
+                with (
+                    patch.object(cli_module, "get_literature") as retrieved,
+                    patch.object(cli_module, "update_literature") as updated,
+                ):
+                    _, feeder, outputs = self.run_with_actions(
+                        ["4", invalid_value, "0"]
+                    )
+
+                retrieved.assert_not_called()
+                updated.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertTrue(
+                    any(
+                        item.startswith("入力エラー: ")
+                        and "文献ID" in item
+                        and "ASCII" in item
+                        for item in outputs
+                    )
+                )
+                self.assertEqual(
+                    feeder.prompts,
+                    [
+                        "選択してください: ",
+                        "文献ID（ASCII数字）: ",
+                        "選択してください: ",
+                    ],
+                )
+
+    def test_edit_accepts_trimmed_existing_maximum_id(self) -> None:
+        first_id = self.add_record("First ID")
+        maximum_id = self.add_record("Maximum existing ID")
+        first_before = get_literature(self.connection, first_id)
+
+        with patch.object(
+            cli_module,
+            "get_literature",
+            wraps=get_literature,
+        ) as retrieved:
+            _, _, outputs = self.run_with_actions(
+                ["4", f" \t00{maximum_id}\n ", "2", " New Author ", "1", "0"]
+            )
+
+        retrieved.assert_called_once_with(self.connection, maximum_id)
+        self.assertEqual(
+            get_literature(self.connection, maximum_id).authors,
+            "New Author",
+        )
+        self.assertEqual(
+            get_literature(self.connection, first_id),
+            first_before,
+        )
+        self.assertIn("文献を更新しました。", outputs)
+
+    def test_edit_unknown_id_uses_get_api_then_returns_to_menu(self) -> None:
+        before = self.table_snapshot()
+
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(cli_module, "update_literature") as updated,
+        ):
+            _, feeder, outputs = self.run_with_actions(["4", "999999", "0"])
+
+        retrieved.assert_called_once_with(self.connection, 999999)
+        updated.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertIn("対象文献が見つかりません。", outputs)
+        self.assertEqual(
+            feeder.prompts,
+            [
+                "選択してください: ",
+                "文献ID（ASCII数字）: ",
+                "選択してください: ",
+            ],
+        )
+
+    def test_edit_displays_all_31_saved_fields_in_order_without_mutation(
+        self,
+    ) -> None:
+        literature_id = self.add_record(
+            '肩関節 "Full", Study',
+            authors='Author A, "Author B"\nAuthor C',
+            journal="Journal 内部  空白",
+            publication_year=2025,
+            volume="12",
+            issue="3",
+            pages="101-112",
+            doi="10.1000/display",
+            pmid="00123",
+            url="https://example.test/edit",
+            language="日本語 / English",
+            publication_type="原著",
+            abstract='Abstract, "quoted"\nsecond line',
+            pdf_path="/tmp/edit literature.pdf",
+            personal_summary="自分の要約",
+            ai_summary="AI要約\n未確認本文",
+            ai_summary_status="修正済み",
+            general_note="一般メモ",
+            key_findings="主要な結果",
+            methods_note="方法メモ",
+            clinical_note="臨床メモ",
+            limitation_note="限界メモ",
+            relevance_note="関連メモ",
+            evidence_level="Level II",
+            verification_status="要確認",
+            adoption_status="採用候補",
+            exclusion_reason="除外理由",
+            rating=4,
+        )
+        self.connection.execute(
+            "UPDATE literature SET doi = ?, pmid = ? WHERE id = ?",
+            (
+                " DOI:10.1000/Mixed Case ",
+                " PMID: 001 23 ",
+                literature_id,
+            ),
+        )
+        self.connection.commit()
+        before = get_literature(self.connection, literature_id)
+
+        _, _, outputs = self.run_with_actions(
+            ["4", str(literature_id), "0", "0"]
+        )
+
+        after = get_literature(self.connection, literature_id)
+        self.assertEqual(after, before)
+        displayed = next(item for item in outputs if item.startswith("id: "))
+        expected_fields = (
+            "id",
+            *_REGISTRATION_FIELDS,
+            "created_at",
+            "updated_at",
+        )
+        position = -1
+        for index, field_name in enumerate(expected_fields):
+            with self.subTest(field_name=field_name):
+                prefix = "" if index == 0 else "\n"
+                needle = f"{prefix}{field_name}: "
+                position = displayed.find(needle, position + 1)
+                self.assertNotEqual(position, -1)
+                self.assertIn(
+                    f"{field_name}: "
+                    f"{cli_module._display_value(getattr(before, field_name))}",
+                    displayed,
+                )
+        self.assertEqual(
+            displayed,
+            cli_module._format_edit_literature(before),
+        )
+        self.assertIn(" DOI:10.1000/Mixed Case ", displayed)
+        self.assertIn(" PMID: 001 23 ", displayed)
+
+    def test_edit_formatter_displays_none_and_zero_without_mutation(self) -> None:
+        literature = Literature(
+            id=0,
+            title="Formatter",
+            publication_year=0,
+            rating=None,
+            created_at="created",
+            updated_at="updated",
+        )
+        before = vars(literature).copy()
+
+        formatted = cli_module._format_edit_literature(literature)
+
+        self.assertIn("id: 0", formatted)
+        self.assertIn("publication_year: 0", formatted)
+        self.assertIn("authors: 未登録", formatted)
+        self.assertIn("rating: 未登録", formatted)
+        self.assertNotIn("authors: None", formatted)
+        self.assertEqual(vars(literature), before)
+
+    def test_edit_field_menu_mapping_updates_each_of_28_fields_once(
+        self,
+    ) -> None:
+        sentinel_id = self.add_record(
+            "Mapping sentinel",
+            general_note="must stay unchanged",
+        )
+        sentinel_before = get_literature(self.connection, sentinel_id)
+        raw_and_expected = {
+            "title": ("  New title  ", "New title"),
+            "authors": (
+                '  Author A, "Author B"\nkeeps  spaces  ',
+                'Author A, "Author B"\nkeeps  spaces',
+            ),
+            "journal": ("  New Journal  ", "New Journal"),
+            "publication_year": (" 2025 ", 2025),
+            "volume": (" 12 ", "12"),
+            "issue": (" 3 ", "3"),
+            "pages": (" 101-112 ", "101-112"),
+            "doi": (" DOI:10.ABC/Edited ", "10.abc/edited"),
+            "pmid": (" PMID: 001 23 ", "00123"),
+            "url": (" https://example.test/edited ", "https://example.test/edited"),
+            "language": (" 日本語 / English ", "日本語 / English"),
+            "publication_type": (" 原著 ", "原著"),
+            "abstract": (
+                '  Abstract, "quoted"\nsecond  line  ',
+                'Abstract, "quoted"\nsecond  line',
+            ),
+            "pdf_path": (" /tmp/edited literature.pdf ", "/tmp/edited literature.pdf"),
+            "personal_summary": (" 自分の要約 ", "自分の要約"),
+            "ai_summary": (" AI要約本文 ", "AI要約本文"),
+            "ai_summary_status": (" 確認済み ", "確認済み"),
+            "general_note": (" 一般メモ ", "一般メモ"),
+            "key_findings": (" 主要な結果 ", "主要な結果"),
+            "methods_note": (" 方法メモ ", "方法メモ"),
+            "clinical_note": (" 臨床メモ ", "臨床メモ"),
+            "limitation_note": (" 限界メモ ", "限界メモ"),
+            "relevance_note": (" 関連メモ ", "関連メモ"),
+            "evidence_level": (" Level II ", "Level II"),
+            "verification_status": (" 確認済み ", "確認済み"),
+            "adoption_status": (" 採用 ", "採用"),
+            "exclusion_reason": (" 除外理由 ", "除外理由"),
+            "rating": (" 05 ", 5),
+        }
+        self.assertEqual(tuple(raw_and_expected), _REGISTRATION_FIELDS)
+        self.assertEqual(cli_module._EDIT_FIELDS, _REGISTRATION_FIELDS)
+
+        for field_number, field_name in enumerate(
+            _REGISTRATION_FIELDS,
+            start=1,
+        ):
+            with self.subTest(
+                field_number=field_number,
+                field_name=field_name,
+            ):
+                literature_id = self.add_record(
+                    f"Mapping record {field_number}",
+                )
+                before = get_literature(self.connection, literature_id)
+                raw_value, expected_value = raw_and_expected[field_name]
+                api_value = (
+                    raw_value.strip()
+                    if field_name in {"doi", "pmid"}
+                    else expected_value
+                )
+                with patch.object(
+                    cli_module,
+                    "update_literature",
+                    wraps=update_literature,
+                ) as updated:
+                    _, _, outputs = self.run_with_actions(
+                        self.edit_actions(
+                            literature_id,
+                            field_number,
+                            raw_value,
+                        )
+                    )
+
+                updated.assert_called_once_with(
+                    self.connection,
+                    literature_id,
+                    {field_name: api_value},
+                )
+                after = get_literature(self.connection, literature_id)
+                self.assertEqual(
+                    getattr(after, field_name),
+                    expected_value,
+                )
+                for other_field in _REGISTRATION_FIELDS:
+                    if other_field != field_name:
+                        self.assertEqual(
+                            getattr(after, other_field),
+                            getattr(before, other_field),
+                        )
+                self.assertEqual(after.created_at, before.created_at)
+                self.assertGreater(
+                    datetime.fromisoformat(
+                        after.updated_at.replace("Z", "+00:00")
+                    ),
+                    datetime.fromisoformat(
+                        before.updated_at.replace("Z", "+00:00")
+                    ),
+                )
+                self.assertIn(f"field: {field_name}", outputs)
+                self.assertIn("文献を更新しました。", outputs)
+
+        self.assertEqual(
+            get_literature(self.connection, sentinel_id),
+            sentinel_before,
+        )
+
+    def test_edit_field_menu_trims_loops_and_zero_cancels(self) -> None:
+        literature_id = self.add_record("Field menu loop")
+        before = self.table_snapshot()
+        invalid_count = 1200
+        actions = [
+            "4",
+            str(literature_id),
+            "",
+            "-1",
+            "２",
+            "٢",
+            "29",
+            *(["invalid"] * invalid_count),
+            " 0 ",
+            "0",
+        ]
+
+        with patch.object(cli_module, "update_literature") as updated:
+            _, feeder, outputs = self.run_with_actions(actions)
+
+        updated.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_EDIT_FIELD_MESSAGE),
+            invalid_count + 5,
+        )
+        self.assertIn("文献編集を中止しました。", outputs)
+        self.assertEqual(
+            feeder.prompts.count("選択してください: "),
+            invalid_count + 8,
+        )
+        for field_number, field_name in enumerate(
+            _REGISTRATION_FIELDS,
+            start=1,
+        ):
+            self.assertIn(
+                f"{field_number}. {field_name}",
+                cli_module._EDIT_FIELD_MENU,
+            )
+        for forbidden in ("id", "created_at", "updated_at", "tag", "usage"):
+            self.assertNotRegex(
+                cli_module._EDIT_FIELD_MENU,
+                rf"(?m)^\d+\. {forbidden}$",
+            )
+
+    def test_edit_optional_text_can_be_cleared_and_does_not_nfkc(self) -> None:
+        literature_id = self.add_record(
+            "Optional text",
+            authors="Existing authors",
+            general_note="Existing note",
+        )
+
+        self.run_with_actions(
+            self.edit_actions(literature_id, 2, " \t\n ")
+        )
+        self.run_with_actions(
+            self.edit_actions(
+                literature_id,
+                18,
+                "  ＳＨＯＵＬＤＥＲ： 内部  空白  ",
+            )
+        )
+
+        stored = get_literature(self.connection, literature_id)
+        self.assertIsNone(stored.authors)
+        self.assertEqual(
+            stored.general_note,
+            "ＳＨＯＵＬＤＥＲ： 内部  空白",
+        )
+
+    def test_edit_title_and_required_status_blank_stop_before_update(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Required fields")
+        cases = (
+            (1, " \t\n ", "タイトルは必須"),
+            (17, " ", "ai_summary_status"),
+            (25, "\t", "verification_status"),
+            (26, "\n", "adoption_status"),
+        )
+
+        for field_number, raw_value, expected_message in cases:
+            with self.subTest(field_number=field_number):
+                before = get_literature(self.connection, literature_id)
+                with patch.object(cli_module, "update_literature") as updated:
+                    _, _, outputs = self.run_with_actions(
+                        [
+                            "4",
+                            str(literature_id),
+                            str(field_number),
+                            raw_value,
+                            "0",
+                        ]
+                    )
+                updated.assert_not_called()
+                self.assertEqual(
+                    get_literature(self.connection, literature_id),
+                    before,
+                )
+                self.assertTrue(
+                    any(
+                        item.startswith("入力エラー: ")
+                        and expected_message in item
+                        for item in outputs
+                    )
+                )
+
+    def test_edit_integer_formats_and_repository_ranges(self) -> None:
+        literature_id = self.add_record(
+            "Integer edits",
+            publication_year=2025,
+            rating=3,
+        )
+        invalid_formats = (
+            "+1",
+            "-1",
+            "1.5",
+            "1e3",
+            "２０２５",
+            "١٢٣٤",
+            "value",
+        )
+
+        for field_number, field_name in ((4, "publication_year"), (28, "rating")):
+            for invalid_value in invalid_formats:
+                with self.subTest(
+                    field_name=field_name,
+                    invalid_value=invalid_value,
+                ):
+                    before = get_literature(self.connection, literature_id)
+                    with patch.object(
+                        cli_module,
+                        "update_literature",
+                    ) as updated:
+                        _, _, outputs = self.run_with_actions(
+                            [
+                                "4",
+                                str(literature_id),
+                                str(field_number),
+                                invalid_value,
+                                "0",
+                            ]
+                        )
+                    updated.assert_not_called()
+                    self.assertEqual(
+                        get_literature(self.connection, literature_id),
+                        before,
+                    )
+                    self.assertTrue(
+                        any(
+                            item.startswith("入力エラー: ")
+                            and field_name in item
+                            and "ASCII" in item
+                            for item in outputs
+                        )
+                    )
+
+        for field_number, field_name, invalid_value in (
+            (4, "publication_year", "1799"),
+            (4, "publication_year", "9999"),
+            (4, "publication_year", "05"),
+            (28, "rating", "0"),
+            (28, "rating", "6"),
+        ):
+            with self.subTest(
+                field_name=field_name,
+                invalid_value=invalid_value,
+            ):
+                before = get_literature(self.connection, literature_id)
+                _, _, outputs = self.run_with_actions(
+                    self.edit_actions(
+                        literature_id,
+                        field_number,
+                        invalid_value,
+                    )
+                )
+                self.assertEqual(
+                    get_literature(self.connection, literature_id),
+                    before,
+                )
+                self.assertTrue(
+                    any(
+                        item.startswith("更新エラー: ")
+                        and field_name in item
+                        for item in outputs
+                    )
+                )
+
+        self.run_with_actions(self.edit_actions(literature_id, 4, ""))
+        self.assertIsNone(
+            get_literature(self.connection, literature_id).publication_year
+        )
+        self.run_with_actions(self.edit_actions(literature_id, 28, ""))
+        self.assertIsNone(get_literature(self.connection, literature_id).rating)
+        self.run_with_actions(self.edit_actions(literature_id, 28, "05"))
+        self.assertEqual(get_literature(self.connection, literature_id).rating, 5)
+
+        fixed_today = date(2026, 12, 31)
+
+        class FixedDate(date):
+            @classmethod
+            def today(cls) -> date:
+                return fixed_today
+
+        with patch.object(repository_module, "date", FixedDate):
+            for valid_year in ("1800", "2027"):
+                self.run_with_actions(
+                    self.edit_actions(literature_id, 4, valid_year)
+                )
+                self.assertEqual(
+                    get_literature(
+                        self.connection,
+                        literature_id,
+                    ).publication_year,
+                    int(valid_year),
+                )
+            before = get_literature(self.connection, literature_id)
+            for invalid_year in ("1799", "2028"):
+                _, _, outputs = self.run_with_actions(
+                    self.edit_actions(literature_id, 4, invalid_year)
+                )
+                self.assertEqual(
+                    get_literature(self.connection, literature_id),
+                    before,
+                )
+                self.assertTrue(
+                    any(item.startswith("更新エラー: ") for item in outputs)
+                )
+
+    def test_edit_all_status_values_and_invalid_values(self) -> None:
+        literature_id = self.add_record(
+            "Status edits",
+            ai_summary="AI body remains",
+            exclusion_reason="Reason remains",
+        )
+        cases = (
+            (
+                17,
+                "ai_summary_status",
+                ("未作成", "未確認", "確認済み", "修正済み"),
+            ),
+            (
+                25,
+                "verification_status",
+                ("未確認", "一部確認", "確認済み", "要確認"),
+            ),
+            (
+                26,
+                "adoption_status",
+                ("未判定", "採用候補", "採用", "除外"),
+            ),
+        )
+
+        for field_number, field_name, allowed_values in cases:
+            for value in allowed_values:
+                with self.subTest(field_name=field_name, value=value):
+                    self.run_with_actions(
+                        self.edit_actions(
+                            literature_id,
+                            field_number,
+                            f" {value} ",
+                        )
+                    )
+                    self.assertEqual(
+                        getattr(
+                            get_literature(self.connection, literature_id),
+                            field_name,
+                        ),
+                        value,
+                    )
+
+            before = get_literature(self.connection, literature_id)
+            _, _, outputs = self.run_with_actions(
+                self.edit_actions(
+                    literature_id,
+                    field_number,
+                    " 不正状態 ",
+                )
+            )
+            self.assertEqual(
+                get_literature(self.connection, literature_id),
+                before,
+            )
+            self.assertTrue(
+                any(
+                    item.startswith("更新エラー: ")
+                    and field_name in item
+                    for item in outputs
+                )
+            )
+            self.assertNotIn(
+                "データベースエラーが発生しました。",
+                outputs,
+            )
+
+        stored = get_literature(self.connection, literature_id)
+        self.assertEqual(stored.ai_summary, "AI body remains")
+        self.assertEqual(stored.exclusion_reason, "Reason remains")
+
+    def test_edit_doi_pmid_confirm_raw_then_repository_normalizes(self) -> None:
+        literature_id = self.add_record("Identifier edits")
+
+        for field_number, field_name, raw_value, expected in (
+            (8, "doi", " DOI:10.ABC/Raw ", "10.abc/raw"),
+            (9, "pmid", " PMID: 001 23 ", "00123"),
+        ):
+            with self.subTest(field_name=field_name):
+                with patch.object(
+                    cli_module,
+                    "find_duplicate_candidates",
+                ) as duplicate_check:
+                    _, _, outputs = self.run_with_actions(
+                        self.edit_actions(
+                            literature_id,
+                            field_number,
+                            raw_value,
+                        )
+                    )
+                duplicate_check.assert_not_called()
+                self.assertEqual(
+                    getattr(
+                        get_literature(self.connection, literature_id),
+                        field_name,
+                    ),
+                    expected,
+                )
+                displayed = "\n".join(outputs)
+                self.assertIn(f"変更後: {raw_value.strip()}", displayed)
+                self.assertIn(
+                    "DOIとPMIDは更新時に標準形式へ正規化されます。",
+                    outputs,
+                )
+                success_index = outputs.index("文献を更新しました。")
+                self.assertNotIn(
+                    expected,
+                    "\n".join(outputs[success_index:success_index + 3]),
+                )
+
+        before_invalid_pmid = get_literature(
+            self.connection,
+            literature_id,
+        )
+        _, _, invalid_outputs = self.run_with_actions(
+            self.edit_actions(
+                literature_id,
+                9,
+                " PMID: invalid ",
+            )
+        )
+        self.assertEqual(
+            get_literature(self.connection, literature_id),
+            before_invalid_pmid,
+        )
+        self.assertTrue(
+            any(
+                item.startswith("更新エラー: ")
+                and "pmid" in item
+                for item in invalid_outputs
+            )
+        )
+
+    def test_edit_confirmation_loops_trims_and_cancel_preserves_row(
+        self,
+    ) -> None:
+        literature_id = self.add_record(
+            "Confirmation edits",
+            authors="Before",
+        )
+        invalid_count = 1200
+        actions = [
+            "4",
+            str(literature_id),
+            "2",
+            "After",
+            "",
+            "invalid",
+            *(["9"] * invalid_count),
+            " \t0\n ",
+            "0",
+        ]
+        before = get_literature(self.connection, literature_id)
+
+        with patch.object(cli_module, "update_literature") as updated:
+            _, feeder, outputs = self.run_with_actions(actions)
+
+        updated.assert_not_called()
+        self.assertEqual(
+            get_literature(self.connection, literature_id),
+            before,
+        )
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_CONFIRMATION_MESSAGE),
+            invalid_count + 2,
+        )
+        self.assertIn("文献更新を中止しました。", outputs)
+        self.assertEqual(
+            feeder.prompts.count("選択してください: "),
+            invalid_count + 6,
+        )
+
+    def test_edit_input_interruptions_exit_once_without_update(self) -> None:
+        literature_id = self.add_record(
+            "Interrupted edit",
+            authors="Before",
+        )
+        cases = (
+            ["4", EOFError("id EOF")],
+            ["4", str(literature_id), KeyboardInterrupt()],
+            ["4", str(literature_id), "2", EOFError("value EOF")],
+            [
+                "4",
+                str(literature_id),
+                "2",
+                "After",
+                KeyboardInterrupt(),
+            ],
+        )
+
+        for actions in cases:
+            with self.subTest(action_count=len(actions)):
+                before = get_literature(self.connection, literature_id)
+                outputs: list[str] = []
+                with patch.object(cli_module, "update_literature") as updated:
+                    result = run_cli(
+                        self.connection,
+                        input_func=InputFeeder(actions),
+                        output_func=outputs.append,
+                    )
+                self.assertIsNone(result)
+                updated.assert_not_called()
+                self.assertEqual(
+                    get_literature(self.connection, literature_id),
+                    before,
+                )
+                self.assertEqual(outputs.count("CLIを終了します。"), 1)
+
+    def test_edit_unexpected_input_exceptions_propagate_unchanged(self) -> None:
+        literature_id = self.add_record("Unexpected input")
+        cases = (
+            (["4"], ValueError("id input")),
+            (["4", str(literature_id)], sqlite3.OperationalError("field input")),
+            (["4", str(literature_id), "2"], RuntimeError("value input")),
+            (
+                ["4", str(literature_id), "2", "After"],
+                sqlite3.OperationalError("confirmation input"),
+            ),
+        )
+
+        for prefix, expected in cases:
+            with self.subTest(exception=str(expected)):
+                before = get_literature(self.connection, literature_id)
+                outputs: list[str] = []
+                with patch.object(cli_module, "update_literature") as updated:
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder([*prefix, expected]),
+                            output_func=outputs.append,
+                        )
+                self.assertIs(raised.exception, expected)
+                updated.assert_not_called()
+                self.assertEqual(
+                    get_literature(self.connection, literature_id),
+                    before,
+                )
+                self.assertNotIn(
+                    "データベースエラーが発生しました。",
+                    outputs,
+                )
+                self.assertNotIn("CLIを終了します。", outputs)
+
+    def test_edit_input_exception_matrix_preserves_state_and_boundary(
+        self,
+    ) -> None:
+        positions = (
+            (
+                "literature_id",
+                lambda literature_id: ["4"],
+                (
+                    "選択してください: ",
+                    "文献ID（ASCII数字）: ",
+                ),
+            ),
+            (
+                "field_choice",
+                lambda literature_id: ["4", str(literature_id)],
+                (
+                    "選択してください: ",
+                    "文献ID（ASCII数字）: ",
+                    "選択してください: ",
+                ),
+            ),
+            (
+                "new_value",
+                lambda literature_id: [
+                    "4",
+                    str(literature_id),
+                    "2",
+                ],
+                (
+                    "選択してください: ",
+                    "文献ID（ASCII数字）: ",
+                    "選択してください: ",
+                    "authors（空欄で未登録）: ",
+                ),
+            ),
+            (
+                "confirmation",
+                lambda literature_id: [
+                    "4",
+                    str(literature_id),
+                    "2",
+                    "After",
+                ],
+                (
+                    "選択してください: ",
+                    "文献ID（ASCII数字）: ",
+                    "選択してください: ",
+                    "authors（空欄で未登録）: ",
+                    "選択してください: ",
+                ),
+            ),
+        )
+        exception_types = (
+            ("EOFError", EOFError),
+            ("KeyboardInterrupt", KeyboardInterrupt),
+            ("ValueError", ValueError),
+            ("RuntimeError", RuntimeError),
+            ("sqlite3.Error", sqlite3.Error),
+        )
+
+        for position_index, (
+            position,
+            action_prefix,
+            expected_prompts,
+        ) in enumerate(positions):
+            for exception_index, (
+                exception_name,
+                exception_type,
+            ) in enumerate(exception_types):
+                with self.subTest(
+                    position=position,
+                    exception=exception_name,
+                ):
+                    connection, target_id, other_id = (
+                        self.create_tracking_edit_fixture(
+                            f"input-{position_index}-{exception_index}"
+                        )
+                    )
+                    try:
+                        before = self.table_snapshot_for(connection)
+                        target_before = get_literature(
+                            connection,
+                            target_id,
+                        )
+                        other_before = get_literature(
+                            connection,
+                            other_id,
+                        )
+                        expected = exception_type(
+                            f"{position} {exception_name} input failure"
+                        )
+                        feeder = InputFeeder(
+                            [*action_prefix(target_id), expected]
+                        )
+                        outputs: list[str] = []
+
+                        with patch.object(
+                            cli_module,
+                            "update_literature",
+                        ) as updated:
+                            if isinstance(
+                                expected,
+                                (EOFError, KeyboardInterrupt),
+                            ):
+                                result = run_cli(
+                                    connection,
+                                    input_func=feeder,
+                                    output_func=outputs.append,
+                                )
+                                self.assertIsNone(result)
+                                self.assertEqual(
+                                    outputs.count(
+                                        "CLIを終了します。"
+                                    ),
+                                    1,
+                                )
+                            else:
+                                with self.assertRaises(
+                                    exception_type
+                                ) as raised:
+                                    run_cli(
+                                        connection,
+                                        input_func=feeder,
+                                        output_func=outputs.append,
+                                    )
+                                self.assertIs(
+                                    raised.exception,
+                                    expected,
+                                )
+                                self.assertNotIn(
+                                    "CLIを終了します。",
+                                    outputs,
+                                )
+
+                        updated.assert_not_called()
+                        self.assertEqual(
+                            feeder.prompts,
+                            list(expected_prompts),
+                        )
+                        self.assertEqual(
+                            self.table_snapshot_for(connection),
+                            before,
+                        )
+                        self.assertEqual(
+                            get_literature(connection, target_id),
+                            target_before,
+                        )
+                        self.assertEqual(
+                            get_literature(connection, other_id),
+                            other_before,
+                        )
+                        self.assertEqual(
+                            get_literature(
+                                connection,
+                                target_id,
+                            ).updated_at,
+                            target_before.updated_at,
+                        )
+                        self.assertFalse(
+                            any(
+                                item.startswith("入力エラー: ")
+                                for item in outputs
+                            )
+                        )
+                        self.assertFalse(
+                            any(
+                                item.startswith("更新エラー: ")
+                                for item in outputs
+                            )
+                        )
+                        self.assertNotIn(
+                            "データベースエラーが発生しました。",
+                            outputs,
+                        )
+                        self.assertEqual(connection.commit_calls, 0)
+                        self.assertEqual(connection.rollback_calls, 0)
+                        self.assertEqual(connection.close_calls, 0)
+                        self.assertFalse(connection.in_transaction)
+                        self.assertEqual(
+                            connection.execute(
+                                "SELECT 1"
+                            ).fetchone()[0],
+                            1,
+                        )
+                    finally:
+                        if connection.in_transaction:
+                            sqlite3.Connection.rollback(connection)
+                        sqlite3.Connection.close(connection)
+
+    def test_edit_output_exception_matrix_preserves_stage_contracts(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "initial_active_transaction",
+                "initial_transaction",
+                1,
+                "not_called",
+            ),
+            (
+                "invalid_literature_id",
+                "invalid_id",
+                2,
+                "not_called",
+            ),
+            (
+                "missing_literature",
+                "missing",
+                2,
+                "not_called",
+            ),
+            (
+                "current_literature",
+                "current",
+                2,
+                "not_called",
+            ),
+            (
+                "invalid_new_value",
+                "invalid_value",
+                4,
+                "not_called",
+            ),
+            (
+                "change_confirmation",
+                "change",
+                4,
+                "not_called",
+            ),
+            (
+                "pre_update_active_transaction",
+                "late_transaction",
+                5,
+                "not_called",
+            ),
+            (
+                "update_value_error",
+                "update_error",
+                5,
+                "once",
+            ),
+            (
+                "update_false",
+                "disappeared",
+                5,
+                "once",
+            ),
+        )
+
+        for case_index, (
+            case_name,
+            stage,
+            expected_prompt_count,
+            expected_update_calls,
+        ) in enumerate(cases):
+            with self.subTest(case=case_name, exception="RuntimeError"):
+                connection, target_id, _ = (
+                    self.create_tracking_edit_fixture(
+                        f"output-{case_index}"
+                    )
+                )
+                marker_name = "pending-late-transaction-marker"
+                try:
+                    before = self.table_snapshot_for(connection)
+                    target_before = get_literature(
+                        connection,
+                        target_id,
+                    )
+                    update_error = ValueError(
+                        "forced update validation failure"
+                    )
+                    expected = RuntimeError(
+                        f"{case_name} output failure"
+                    )
+                    if stage == "initial_transaction":
+                        connection.execute("BEGIN")
+                        actions: list[object] = ["4"]
+                        failing_message = (
+                            cli_module._EDIT_ACTIVE_TRANSACTION_MESSAGE
+                        )
+                    elif stage == "invalid_id":
+                        actions = ["4", "invalid"]
+                        failing_message = (
+                            "入力エラー: 文献IDは1以上の"
+                            "ASCII数字だけで入力してください。"
+                        )
+                    elif stage == "missing":
+                        actions = ["4", "999999"]
+                        failing_message = "対象文献が見つかりません。"
+                    elif stage == "current":
+                        actions = ["4", str(target_id)]
+                        failing_message = (
+                            cli_module._format_edit_literature(
+                                target_before
+                            )
+                        )
+                    elif stage == "invalid_value":
+                        actions = ["4", str(target_id), "1", ""]
+                        failing_message = (
+                            "入力エラー: タイトルは必須です。"
+                        )
+                    elif stage == "change":
+                        actions = [
+                            "4",
+                            str(target_id),
+                            "2",
+                            "After",
+                        ]
+                        failing_message = (
+                            "文献の変更内容を確認してください。"
+                        )
+                    elif stage == "late_transaction":
+                        actions = [
+                            "4",
+                            str(target_id),
+                            "2",
+                            "After",
+                            "1",
+                        ]
+                        failing_message = (
+                            cli_module._EDIT_ACTIVE_TRANSACTION_MESSAGE
+                        )
+                    elif stage == "update_error":
+                        actions = [
+                            "4",
+                            str(target_id),
+                            "2",
+                            "After",
+                            "1",
+                        ]
+                        failing_message = f"更新エラー: {update_error}"
+                    else:
+                        actions = [
+                            "4",
+                            str(target_id),
+                            "2",
+                            "After",
+                            "1",
+                        ]
+                        failing_message = (
+                            "確認後に対象文献が存在しなくなりました。"
+                        )
+
+                    feeder = InputFeeder(actions)
+
+                    def input_func(prompt: str) -> str:
+                        value = feeder(prompt)
+                        if (
+                            stage == "late_transaction"
+                            and value == "1"
+                            and len(feeder.prompts) == 5
+                        ):
+                            self.assertFalse(connection.in_transaction)
+                            connection.execute(
+                                "INSERT INTO tags (name) VALUES (?)",
+                                (marker_name,),
+                            )
+                            self.assertTrue(connection.in_transaction)
+                        return value
+
+                    outputs: list[str] = []
+
+                    def output_func(message: str) -> None:
+                        outputs.append(message)
+                        if message == failing_message:
+                            raise expected
+
+                    update_side_effect: object = None
+                    update_return_value = True
+                    if stage == "update_error":
+                        update_side_effect = update_error
+                    elif stage == "disappeared":
+                        update_return_value = False
+
+                    with patch.object(
+                        cli_module,
+                        "update_literature",
+                        side_effect=update_side_effect,
+                        return_value=update_return_value,
+                    ) as updated:
+                        with self.assertRaises(RuntimeError) as raised:
+                            run_cli(
+                                connection,
+                                input_func=input_func,
+                                output_func=output_func,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    self.assertIsNot(raised.exception, update_error)
+                    if expected_update_calls == "once":
+                        updated.assert_called_once_with(
+                            connection,
+                            target_id,
+                            {"authors": "After"},
+                        )
+                    else:
+                        updated.assert_not_called()
+                    self.assertEqual(
+                        len(feeder.prompts),
+                        expected_prompt_count,
+                    )
+                    self.assertEqual(
+                        outputs.count(failing_message),
+                        1,
+                    )
+                    expected_snapshot = before
+                    if stage == "late_transaction":
+                        marker_rows = connection.execute(
+                            "SELECT * FROM tags WHERE name = ?",
+                            (marker_name,),
+                        ).fetchall()
+                        self.assertEqual(len(marker_rows), 1)
+                        expected_snapshot = {
+                            table: list(rows)
+                            for table, rows in before.items()
+                        }
+                        expected_snapshot["tags"].append(
+                            tuple(marker_rows[0])
+                        )
+                    self.assertEqual(
+                        self.table_snapshot_for(connection),
+                        expected_snapshot,
+                    )
+                    self.assertEqual(
+                        get_literature(connection, target_id),
+                        target_before,
+                    )
+                    self.assertEqual(
+                        get_literature(
+                            connection,
+                            target_id,
+                        ).updated_at,
+                        target_before.updated_at,
+                    )
+                    self.assertNotIn(
+                        "データベースエラーが発生しました。",
+                        outputs,
+                    )
+                    self.assertNotIn("文献を更新しました。", outputs)
+                    self.assertNotIn("CLIを終了します。", outputs)
+                    if stage == "update_error":
+                        self.assertEqual(
+                            sum(
+                                item.startswith("更新エラー: ")
+                                for item in outputs
+                            ),
+                            1,
+                        )
+                    else:
+                        self.assertFalse(
+                            any(
+                                item.startswith("更新エラー: ")
+                                for item in outputs
+                            )
+                        )
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                    self.assertEqual(
+                        connection.in_transaction,
+                        stage
+                        in {
+                            "initial_transaction",
+                            "late_transaction",
+                        },
+                    )
+                    self.assertEqual(
+                        connection.execute("SELECT 1").fetchone()[0],
+                        1,
+                    )
+                finally:
+                    if stage == "late_transaction":
+                        sqlite3.Connection.rollback(connection)
+                        self.assertFalse(connection.in_transaction)
+                        self.assertEqual(
+                            connection.execute(
+                                "SELECT COUNT(*) FROM tags WHERE name = ?",
+                                (marker_name,),
+                            ).fetchone()[0],
+                            0,
+                        )
+                        self.assertEqual(
+                            connection.execute("SELECT 1").fetchone()[0],
+                            1,
+                        )
+                        self.assertEqual(connection.commit_calls, 0)
+                        self.assertEqual(connection.rollback_calls, 0)
+                        self.assertEqual(connection.close_calls, 0)
+                    elif connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
+
+        for interruption_index, interruption_type in enumerate(
+            (EOFError, KeyboardInterrupt)
+        ):
+            with self.subTest(
+                case="current_literature",
+                exception=interruption_type.__name__,
+            ):
+                connection, target_id, _ = (
+                    self.create_tracking_edit_fixture(
+                        f"output-interruption-{interruption_index}"
+                    )
+                )
+                try:
+                    before = self.table_snapshot_for(connection)
+                    target_before = get_literature(
+                        connection,
+                        target_id,
+                    )
+                    failing_message = (
+                        cli_module._format_edit_literature(target_before)
+                    )
+                    expected = interruption_type(
+                        "current literature output interruption"
+                    )
+                    feeder = InputFeeder(["4", str(target_id)])
+                    outputs: list[str] = []
+
+                    def output_func(message: str) -> None:
+                        outputs.append(message)
+                        if message == failing_message:
+                            raise expected
+
+                    with patch.object(
+                        cli_module,
+                        "update_literature",
+                    ) as updated:
+                        with self.assertRaises(
+                            interruption_type
+                        ) as raised:
+                            run_cli(
+                                connection,
+                                input_func=feeder,
+                                output_func=output_func,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    updated.assert_not_called()
+                    self.assertEqual(len(feeder.prompts), 2)
+                    self.assertEqual(
+                        self.table_snapshot_for(connection),
+                        before,
+                    )
+                    self.assertEqual(
+                        get_literature(connection, target_id),
+                        target_before,
+                    )
+                    self.assertEqual(
+                        outputs.count(failing_message),
+                        1,
+                    )
+                    self.assertNotIn(
+                        "データベースエラーが発生しました。",
+                        outputs,
+                    )
+                    self.assertFalse(
+                        any(
+                            item.startswith("更新エラー: ")
+                            for item in outputs
+                        )
+                    )
+                    self.assertNotIn("CLIを終了します。", outputs)
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                    self.assertFalse(connection.in_transaction)
+                    self.assertEqual(
+                        connection.execute("SELECT 1").fetchone()[0],
+                        1,
+                    )
+                finally:
+                    if connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
+
+    def test_edit_output_exceptions_before_update_propagate_unchanged(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Output exceptions")
+
+        for expected in (
+            RuntimeError("confirmation output"),
+            EOFError("confirmation output EOF"),
+            KeyboardInterrupt(),
+        ):
+            with self.subTest(exception=type(expected).__name__):
+                before = get_literature(self.connection, literature_id)
+                outputs: list[str] = []
+
+                def output_func(message: str) -> None:
+                    outputs.append(message)
+                    if message == cli_module._EDIT_CONFIRMATION_MENU:
+                        raise expected
+
+                with patch.object(cli_module, "update_literature") as updated:
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(
+                                [
+                                    "4",
+                                    str(literature_id),
+                                    "2",
+                                    "After",
+                                ]
+                            ),
+                            output_func=output_func,
+                        )
+                self.assertIs(raised.exception, expected)
+                updated.assert_not_called()
+                self.assertEqual(
+                    get_literature(self.connection, literature_id),
+                    before,
+                )
+                self.assertNotIn("CLIを終了します。", outputs)
+
+    def test_edit_invalid_and_cancel_output_exceptions_propagate(
+        self,
+    ) -> None:
+        literature_id = self.add_record(
+            "Invalid and cancel output",
+            authors="Before",
+        )
+        cases = (
+            (
+                ["4", str(literature_id), "29"],
+                cli_module._INVALID_EDIT_FIELD_MESSAGE,
+            ),
+            (
+                ["4", str(literature_id), "0"],
+                "文献編集を中止しました。",
+            ),
+            (
+                ["4", str(literature_id), "2", "After", "9"],
+                cli_module._INVALID_CONFIRMATION_MESSAGE,
+            ),
+            (
+                ["4", str(literature_id), "2", "After", "0"],
+                "文献更新を中止しました。",
+            ),
+        )
+
+        for actions, failing_message in cases:
+            for expected in (
+                RuntimeError("edit output runtime"),
+                EOFError("edit output EOF"),
+                KeyboardInterrupt(),
+            ):
+                with self.subTest(
+                    failing_message=failing_message,
+                    exception=type(expected).__name__,
+                ):
+                    before = get_literature(
+                        self.connection,
+                        literature_id,
+                    )
+                    outputs: list[str] = []
+
+                    def output_func(message: str) -> None:
+                        outputs.append(message)
+                        if message == failing_message:
+                            raise expected
+
+                    with patch.object(
+                        cli_module,
+                        "update_literature",
+                    ) as updated:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=output_func,
+                            )
+                    self.assertIs(raised.exception, expected)
+                    updated.assert_not_called()
+                    self.assertEqual(
+                        get_literature(
+                            self.connection,
+                            literature_id,
+                        ),
+                        before,
+                    )
+                    self.assertEqual(outputs.count(failing_message), 1)
+
+    def test_edit_rejects_active_transaction_before_id_or_repository_api(
+        self,
+    ) -> None:
+        pending_cursor = self.connection.execute(
+            "INSERT INTO literature (title) VALUES (?)",
+            ("Pending before edit",),
+        )
+        pending_id = pending_cursor.lastrowid
+        self.assertTrue(self.connection.in_transaction)
+
+        with (
+            patch.object(cli_module, "get_literature") as retrieved,
+            patch.object(cli_module, "update_literature") as updated,
+        ):
+            _, feeder, outputs = self.run_with_actions(["4", "0"])
+
+        retrieved.assert_not_called()
+        updated.assert_not_called()
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM literature WHERE id = ?",
+                (pending_id,),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            feeder.prompts,
+            ["選択してください: ", "選択してください: "],
+        )
+        self.assertIn(cli_module._EDIT_ACTIVE_TRANSACTION_MESSAGE, outputs)
+        self.connection.rollback()
+
+    def test_edit_rechecks_transaction_immediately_before_update(self) -> None:
+        literature_id = self.add_record(
+            "Late edit transaction",
+            authors="Before",
+        )
+        feeder = InputFeeder(
+            ["4", str(literature_id), "2", "After", "1", "0"]
+        )
+        pending_ids: list[int] = []
+
+        def begin_before_confirmation_returns(prompt: str) -> str:
+            value = feeder(prompt)
+            if (
+                prompt == "選択してください: "
+                and value == "1"
+                and len(feeder.prompts) == 5
+            ):
+                cursor = self.connection.execute(
+                    "INSERT INTO literature (title) VALUES (?)",
+                    ("Pending during edit confirmation",),
+                )
+                pending_ids.append(cursor.lastrowid)
+            return value
+
+        outputs: list[str] = []
+        with patch.object(cli_module, "update_literature") as updated:
+            result = run_cli(
+                self.connection,
+                input_func=begin_before_confirmation_returns,
+                output_func=outputs.append,
+            )
+
+        self.assertIsNone(result)
+        updated.assert_not_called()
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            get_literature(self.connection, literature_id).authors,
+            "Before",
+        )
+        self.assertEqual(len(pending_ids), 1)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM literature WHERE id = ?",
+                (pending_ids[0],),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertIn(cli_module._EDIT_ACTIVE_TRANSACTION_MESSAGE, outputs)
+        self.connection.rollback()
+
+    def test_edit_transaction_rejection_calls_no_lifecycle_method(self) -> None:
+        tracking_path = self.directory / "edit-transaction-tracking.db"
+        initialize_database(tracking_path)
+        connection = sqlite3.connect(
+            tracking_path,
+            factory=TrackingConnection,
+        )
+        self.addCleanup(sqlite3.Connection.close, connection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        connection.execute(
+            "INSERT INTO literature (title) VALUES (?)",
+            ("Pending lifecycle edit",),
+        )
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+
+        _, _, outputs = self.run_with_actions(
+            ["4", "0"],
+            connection=connection,
+        )
+
+        self.assertEqual(connection.commit_calls, 0)
+        self.assertEqual(connection.rollback_calls, 0)
+        self.assertEqual(connection.close_calls, 0)
+        self.assertTrue(connection.in_transaction)
+        self.assertIn(cli_module._EDIT_ACTIVE_TRANSACTION_MESSAGE, outputs)
+        sqlite3.Connection.rollback(connection)
+
+    def test_edit_get_api_exception_boundaries(self) -> None:
+        api_exceptions = (
+            sqlite3.OperationalError("get sqlite"),
+            ValueError("get value"),
+            RuntimeError("get runtime"),
+            EOFError("get EOF"),
+            KeyboardInterrupt(),
+        )
+
+        for expected in api_exceptions:
+            with self.subTest(exception=type(expected).__name__):
+                outputs: list[str] = []
+                with (
+                    patch.object(
+                        cli_module,
+                        "get_literature",
+                        side_effect=expected,
+                    ),
+                    patch.object(cli_module, "update_literature") as updated,
+                ):
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(["4", "1"]),
+                            output_func=outputs.append,
+                        )
+                self.assertIs(raised.exception, expected)
+                updated.assert_not_called()
+                if isinstance(expected, sqlite3.Error):
+                    self.assertEqual(
+                        outputs.count(
+                            "データベースエラーが発生しました。"
+                        ),
+                        1,
+                    )
+                else:
+                    self.assertNotIn(
+                        "データベースエラーが発生しました。",
+                        outputs,
+                    )
+
+    def test_edit_update_api_exception_boundaries(self) -> None:
+        literature_id = self.add_record("Update API exceptions")
+        api_exceptions = (
+            ValueError("update value"),
+            sqlite3.OperationalError("update sqlite"),
+            RuntimeError("update runtime"),
+            EOFError("update EOF"),
+            KeyboardInterrupt(),
+        )
+
+        for expected in api_exceptions:
+            with self.subTest(exception=type(expected).__name__):
+                before = get_literature(self.connection, literature_id)
+                outputs: list[str] = []
+                actions: list[object] = [
+                    "4",
+                    str(literature_id),
+                    "2",
+                    "After",
+                    "1",
+                ]
+                if isinstance(expected, ValueError):
+                    actions.append("0")
+                with patch.object(
+                    cli_module,
+                    "update_literature",
+                    side_effect=expected,
+                ):
+                    if isinstance(expected, ValueError):
+                        result = run_cli(
+                            self.connection,
+                            input_func=InputFeeder(actions),
+                            output_func=outputs.append,
+                        )
+                        self.assertIsNone(result)
+                        self.assertTrue(
+                            any(
+                                item.startswith("更新エラー: ")
+                                for item in outputs
+                            )
+                        )
+                    else:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+                        self.assertIs(raised.exception, expected)
+                self.assertEqual(
+                    get_literature(self.connection, literature_id),
+                    before,
+                )
+                if isinstance(expected, sqlite3.Error):
+                    self.assertEqual(
+                        outputs.count(
+                            "データベースエラーが発生しました。"
+                        ),
+                        1,
+                    )
+                elif not isinstance(expected, ValueError):
+                    self.assertNotIn(
+                        "データベースエラーが発生しました。",
+                        outputs,
+                    )
+
+    def test_edit_database_error_output_failure_propagates_output_error(
+        self,
+    ) -> None:
+        literature_id = self.add_record("DB error output edit")
+        database_error = sqlite3.OperationalError("update database")
+        output_error = RuntimeError("database error output")
+
+        def output_func(message: str) -> None:
+            if message == "データベースエラーが発生しました。":
+                raise output_error
+
+        with patch.object(
+            cli_module,
+            "update_literature",
+            side_effect=database_error,
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                run_cli(
+                    self.connection,
+                    input_func=InputFeeder(
+                        [
+                            "4",
+                            str(literature_id),
+                            "2",
+                            "After",
+                            "1",
+                        ]
+                    ),
+                    output_func=output_func,
+                )
+
+        self.assertIs(raised.exception, output_error)
+
+        get_output_error = RuntimeError("get database error output")
+        outputs: list[str] = []
+
+        def get_output_func(message: str) -> None:
+            outputs.append(message)
+            if message == "データベースエラーが発生しました。":
+                raise get_output_error
+
+        with patch.object(
+            cli_module,
+            "get_literature",
+            side_effect=database_error,
+        ):
+            with self.assertRaises(RuntimeError) as get_raised:
+                run_cli(
+                    self.connection,
+                    input_func=InputFeeder(["4", str(literature_id)]),
+                    output_func=get_output_func,
+                )
+
+        self.assertIs(get_raised.exception, get_output_error)
+        self.assertEqual(
+            outputs.count("データベースエラーが発生しました。"),
+            1,
+        )
+
+    def test_edit_update_false_reports_disappeared_without_success(self) -> None:
+        literature_id = self.add_record("Disappearing edit")
+        before = get_literature(self.connection, literature_id)
+
+        with patch.object(
+            cli_module,
+            "update_literature",
+            return_value=False,
+        ) as updated:
+            _, _, outputs = self.run_with_actions(
+                self.edit_actions(literature_id, 2, "After")
+            )
+
+        updated.assert_called_once_with(
+            self.connection,
+            literature_id,
+            {"authors": "After"},
+        )
+        self.assertEqual(
+            get_literature(self.connection, literature_id),
+            before,
+        )
+        self.assertIn("確認後に対象文献が存在しなくなりました。", outputs)
+        self.assertNotIn("文献を更新しました。", outputs)
+
+    def test_real_sqlite_edit_failure_rolls_back_and_rethrows_same_error(
+        self,
+    ) -> None:
+        tracking_path = self.directory / "edit-failure-tracking.db"
+        initialize_database(tracking_path)
+        connection = sqlite3.connect(
+            tracking_path,
+            factory=TrackingConnection,
+        )
+        self.addCleanup(sqlite3.Connection.close, connection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        literature_id = add_literature(
+            connection,
+            Literature(
+                title="Forced update failure",
+                authors="Before",
+            ),
+        )
+        other_id = add_literature(
+            connection,
+            Literature(title="Other preserved record"),
+        )
+        connection.execute(
+            """
+            CREATE TRIGGER reject_forced_cli_update
+            BEFORE UPDATE ON literature
+            WHEN OLD.id = 1
+            BEGIN
+                SELECT RAISE(ABORT, 'forced update failure');
+            END
+            """
+        )
+        connection.commit()
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        before = get_literature(connection, literature_id)
+        other_before = get_literature(connection, other_id)
+        api_errors: list[sqlite3.Error] = []
+        outputs: list[str] = []
+
+        def tracked_update(
+            target_connection: sqlite3.Connection,
+            target_id: int,
+            updates: dict[str, object],
+        ) -> bool:
+            try:
+                return update_literature(
+                    target_connection,
+                    target_id,
+                    updates,
+                )
+            except sqlite3.Error as error:
+                api_errors.append(error)
+                raise
+
+        with patch.object(
+            cli_module,
+            "update_literature",
+            side_effect=tracked_update,
+        ) as updated:
+            with self.assertRaises(sqlite3.Error) as raised:
+                run_cli(
+                    connection,
+                    input_func=InputFeeder(
+                        [
+                            "4",
+                            str(literature_id),
+                            "2",
+                            "After",
+                            "1",
+                        ]
+                    ),
+                    output_func=outputs.append,
+                )
+
+        updated.assert_called_once()
+        self.assertEqual(len(api_errors), 1)
+        self.assertIs(raised.exception, api_errors[0])
+        self.assertEqual(get_literature(connection, literature_id), before)
+        self.assertEqual(get_literature(connection, other_id), other_before)
+        self.assertFalse(connection.in_transaction)
+        self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+        self.assertEqual(connection.rollback_calls, 0)
+        self.assertEqual(connection.close_calls, 0)
+        self.assertEqual(
+            outputs.count("データベースエラーが発生しました。"),
+            1,
+        )
+
+    def test_edit_success_output_failure_keeps_committed_single_update(
+        self,
+    ) -> None:
+        tracking_path = self.directory / "edit-success-output.db"
+        initialize_database(tracking_path)
+        connection = sqlite3.connect(
+            tracking_path,
+            factory=TrackingConnection,
+        )
+        self.addCleanup(sqlite3.Connection.close, connection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        literature_id = add_literature(
+            connection,
+            Literature(
+                title="Committed edit before output failure",
+                authors="Before",
+                journal="Unchanged",
+            ),
+        )
+        before = get_literature(connection, literature_id)
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        expected = RuntimeError("edit success output failure")
+        outputs: list[str] = []
+
+        def output_func(message: str) -> None:
+            outputs.append(message)
+            if message == "文献を更新しました。":
+                raise expected
+
+        with patch.object(
+            cli_module,
+            "update_literature",
+            wraps=update_literature,
+        ) as updated:
+            with self.assertRaises(RuntimeError) as raised:
+                run_cli(
+                    connection,
+                    input_func=InputFeeder(
+                        [
+                            "4",
+                            str(literature_id),
+                            "2",
+                            "After",
+                            "1",
+                        ]
+                    ),
+                    output_func=output_func,
+                )
+
+        self.assertIs(raised.exception, expected)
+        updated.assert_called_once_with(
+            connection,
+            literature_id,
+            {"authors": "After"},
+        )
+        after = get_literature(connection, literature_id)
+        self.assertEqual(after.authors, "After")
+        self.assertEqual(after.journal, before.journal)
+        self.assertEqual(after.created_at, before.created_at)
+        self.assertGreater(
+            datetime.fromisoformat(after.updated_at.replace("Z", "+00:00")),
+            datetime.fromisoformat(before.updated_at.replace("Z", "+00:00")),
+        )
+        self.assertFalse(connection.in_transaction)
+        self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+        self.assertEqual(connection.rollback_calls, 0)
+        self.assertEqual(connection.close_calls, 0)
+        self.assertEqual(outputs.count("文献を更新しました。"), 1)
+        self.assertFalse(
+            any(item.startswith("更新エラー: ") for item in outputs)
+        )
+        self.assertNotIn("データベースエラーが発生しました。", outputs)
+        self.assertNotIn("CLIを終了します。", outputs)
+
+    def test_edit_success_preserves_related_data_schema_and_other_records(
+        self,
+    ) -> None:
+        target_id = self.add_record(
+            "Safe target edit",
+            authors="Before",
+            journal="Unchanged",
+        )
+        other_id = self.add_record(
+            "Safe other record",
+            authors="Other",
+        )
+        tag_id = create_tag(self.connection, "edit-safe-tag")
+        attach_tag_to_literature(self.connection, target_id, tag_id)
+        usage_id = create_usage_history(
+            self.connection,
+            target_id,
+            "edit-safe-use",
+        )
+        self.connection.execute("PRAGMA user_version = 82")
+        target_before = get_literature(self.connection, target_id)
+        other_before = get_literature(self.connection, other_id)
+        related_before = {
+            table: [
+                tuple(row)
+                for row in self.connection.execute(
+                    f"SELECT * FROM {table} ORDER BY 1, 2"
+                ).fetchall()
+            ]
+            for table in ("tags", "literature_tags", "usage_history")
+        }
+        schema_before = self.schema_snapshot()
+        schema_version_before = self.connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = self.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+
+        self.run_with_actions(
+            self.edit_actions(target_id, 2, "After")
+        )
+
+        target_after = get_literature(self.connection, target_id)
+        self.assertEqual(target_after.authors, "After")
+        self.assertEqual(target_after.journal, target_before.journal)
+        self.assertEqual(target_after.created_at, target_before.created_at)
+        self.assertGreater(
+            datetime.fromisoformat(
+                target_after.updated_at.replace("Z", "+00:00")
+            ),
+            datetime.fromisoformat(
+                target_before.updated_at.replace("Z", "+00:00")
+            ),
+        )
+        self.assertEqual(
+            get_literature(self.connection, other_id),
+            other_before,
+        )
+        self.assertEqual(
+            {
+                table: [
+                    tuple(row)
+                    for row in self.connection.execute(
+                        f"SELECT * FROM {table} ORDER BY 1, 2"
+                    ).fetchall()
+                ]
+                for table in ("tags", "literature_tags", "usage_history")
+            },
+            related_before,
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT id FROM tags WHERE id = ?",
+                (tag_id,),
+            ).fetchone()[0],
+            tag_id,
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT id FROM usage_history WHERE id = ?",
+                (usage_id,),
+            ).fetchone()[0],
+            usage_id,
+        )
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA schema_version").fetchone()[0],
+            schema_version_before,
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            user_version_before,
+        )
+        self.assertFalse(self.connection.in_transaction)
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
 
     def test_cli_creates_no_database_export_or_backup_artifacts(self) -> None:
         self.populate_search_records()

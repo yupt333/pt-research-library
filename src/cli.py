@@ -1,4 +1,4 @@
-"""Interactive CLI for listing, searching, and registering literature."""
+"""Interactive CLI for listing, searching, registering, and editing literature."""
 
 import sqlite3
 from collections.abc import Callable, Sequence
@@ -6,7 +6,12 @@ from typing import Optional
 
 from src.duplicates import DuplicateCandidate, find_duplicate_candidates
 from src.models import Literature
-from src.repository import add_literature, list_literature
+from src.repository import (
+    add_literature,
+    get_literature,
+    list_literature,
+    update_literature,
+)
 from src.search import search_literature
 
 
@@ -15,9 +20,12 @@ _MAIN_MENU = """理学療法文献ライブラリ
 1. 文献一覧
 2. 文献検索
 3. 文献登録
+4. 文献編集
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
-_INVALID_MENU_MESSAGE = "入力エラー: 0、1、2、3のいずれかを選択してください。"
+_INVALID_MENU_MESSAGE = (
+    "入力エラー: 0、1、2、3、4のいずれかを選択してください。"
+)
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
 _RECORD_SEPARATOR = "-" * 40
@@ -94,8 +102,46 @@ _REGISTRATION_PROMPTS = (
 _REGISTRATION_CONFIRMATION_MENU = """1. この内容で登録する
 0. 登録を中止する"""
 _INVALID_CONFIRMATION_MESSAGE = "入力エラー: 0、1のいずれかを選択してください。"
-_ACTIVE_TRANSACTION_MESSAGE = (
+_REGISTRATION_ACTIVE_TRANSACTION_MESSAGE = (
     "アクティブなトランザクション中は文献を登録できません。"
+)
+_EDIT_FIELDS = tuple(
+    field_name for field_name, _ in _REGISTRATION_PROMPTS
+)
+_EDIT_FIELD_MENU = "\n".join(
+    (
+        *(
+            f"{number}. {field_name}"
+            for number, field_name in enumerate(_EDIT_FIELDS, start=1)
+        ),
+        "0. 編集を中止する",
+    )
+)
+_EDIT_PROMPTS = {
+    **{
+        field_name: f"{field_name}（空欄で未登録）: "
+        for field_name in _EDIT_FIELDS
+    },
+    "title": "title（必須）: ",
+    "publication_year": "publication_year（空欄で未登録）: ",
+    "ai_summary_status": (
+        f"ai_summary_status（{'・'.join(_AI_SUMMARY_STATUSES)}）: "
+    ),
+    "verification_status": (
+        f"verification_status（{'・'.join(_VERIFICATION_STATUSES)}）: "
+    ),
+    "adoption_status": (
+        f"adoption_status（{'・'.join(_ADOPTION_STATUSES)}）: "
+    ),
+    "rating": "rating（1〜5、空欄で未登録）: ",
+}
+_INVALID_EDIT_FIELD_MESSAGE = (
+    "入力エラー: 0〜28のいずれかを選択してください。"
+)
+_EDIT_CONFIRMATION_MENU = """1. この内容で更新する
+0. 更新を中止する"""
+_EDIT_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中は文献を編集できません。"
 )
 _DUPLICATE_REASON_LABELS = {
     "doi": "DOI一致",
@@ -144,6 +190,15 @@ def _format_registration_literature(literature: Literature) -> str:
     )
     return "\n".join(
         f"{label}: {_display_value(value)}" for label, value in fields
+    )
+
+
+def _format_edit_literature(literature: Literature) -> str:
+    """Format all saved literature fields in their specified display order."""
+    field_names = ("id", *_EDIT_FIELDS, "created_at", "updated_at")
+    return "\n".join(
+        f"{field_name}: {_display_value(getattr(literature, field_name))}"
+        for field_name in field_names
     )
 
 
@@ -206,6 +261,43 @@ def _optional_ascii_integer(
     return int(normalized)
 
 
+def _required_positive_ascii_integer(
+    value: str,
+    field_name: str,
+) -> int:
+    """Convert an ASCII-digit string to an integer greater than zero."""
+    normalized = value.strip()
+    if (
+        not normalized
+        or not all("0" <= character <= "9" for character in normalized)
+        or int(normalized) < 1
+    ):
+        raise ValueError(
+            f"{field_name}は1以上のASCII数字だけで入力してください。"
+        )
+    return int(normalized)
+
+
+def _prepare_edit_value(field_name: str, raw_value: str) -> object:
+    """Apply only the field-specific conversions owned by the CLI."""
+    normalized = raw_value.strip()
+    if field_name == "title":
+        if not normalized:
+            raise ValueError("タイトルは必須です。")
+        return normalized
+    if field_name in {
+        "ai_summary_status",
+        "verification_status",
+        "adoption_status",
+    }:
+        if not normalized:
+            raise ValueError(f"{field_name}は空欄にできません。")
+        return normalized
+    if field_name in {"publication_year", "rating"}:
+        return _optional_ascii_integer(raw_value, field_name)
+    return normalized or None
+
+
 def _display_duplicate_candidates(
     candidates: Sequence[DuplicateCandidate],
     output_func: Callable[[str], object],
@@ -260,7 +352,7 @@ def _run_registration(
 ) -> bool:
     """Collect, review, duplicate-check, and optionally register literature."""
     if connection.in_transaction:
-        output_func(_ACTIVE_TRANSACTION_MESSAGE)
+        output_func(_REGISTRATION_ACTIVE_TRANSACTION_MESSAGE)
         return False
 
     raw_values: dict[str, str] = {}
@@ -320,7 +412,7 @@ def _run_registration(
         output_func(_INVALID_CONFIRMATION_MESSAGE)
 
     if connection.in_transaction:
-        output_func(_ACTIVE_TRANSACTION_MESSAGE)
+        output_func(_REGISTRATION_ACTIVE_TRANSACTION_MESSAGE)
         return False
 
     try:
@@ -335,6 +427,129 @@ def _run_registration(
     output_func("文献を登録しました。")
     output_func(f"ID: {literature_id}")
     output_func(f"title: {literature.title}")
+    return False
+
+
+def _run_edit(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Collect and confirm one partial literature update."""
+    if connection.in_transaction:
+        output_func(_EDIT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        raw_literature_id = _read_input(
+            input_func,
+            "文献ID（ASCII数字）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id,
+            "文献ID",
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        literature = get_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if literature is None:
+        output_func("対象文献が見つかりません。")
+        return False
+
+    output_func("現在の文献情報:")
+    output_func(_format_edit_literature(literature))
+    output_func(_EDIT_FIELD_MENU)
+
+    while True:
+        try:
+            raw_field_choice = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        field_choice = raw_field_choice.strip()
+        if field_choice == "0":
+            output_func("文献編集を中止しました。")
+            return False
+        if field_choice in {
+            str(number) for number in range(1, len(_EDIT_FIELDS) + 1)
+        }:
+            break
+        output_func(_INVALID_EDIT_FIELD_MESSAGE)
+
+    field_name = _EDIT_FIELDS[int(field_choice) - 1]
+    try:
+        raw_new_value = _read_input(
+            input_func,
+            _EDIT_PROMPTS[field_name],
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        new_value = _prepare_edit_value(field_name, raw_new_value)
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    output_func("文献の変更内容を確認してください。")
+    output_func(f"ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+    output_func(f"field: {field_name}")
+    output_func(
+        f"変更前: {_display_value(getattr(literature, field_name))}"
+    )
+    output_func(f"変更後: {_display_value(new_value)}")
+    if field_name in {"doi", "pmid"}:
+        output_func("DOIとPMIDは更新時に標準形式へ正規化されます。")
+
+    output_func(_EDIT_CONFIRMATION_MENU)
+    while True:
+        try:
+            raw_confirmation = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = raw_confirmation.strip()
+        if confirmation == "0":
+            output_func("文献更新を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    if connection.in_transaction:
+        output_func(_EDIT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        updated = update_literature(
+            connection,
+            literature_id,
+            {field_name: new_value},
+        )
+    except ValueError as error:
+        output_func(f"更新エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if not updated:
+        output_func("確認後に対象文献が存在しなくなりました。")
+        return False
+
+    output_func("文献を更新しました。")
+    output_func(f"ID: {literature_id}")
+    output_func(f"field: {field_name}")
     return False
 
 
@@ -415,7 +630,7 @@ def run_cli(
         if choice == "0":
             output_func(_EXIT_MESSAGE)
             return None
-        if choice not in {"1", "2", "3"}:
+        if choice not in {"1", "2", "3", "4"}:
             output_func(_INVALID_MENU_MESSAGE)
             continue
 
@@ -438,6 +653,13 @@ def run_cli(
             output_func(_EXIT_MESSAGE)
             return None
         elif choice == "3" and _run_registration(
+            connection,
+            input_func,
+            output_func,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None
+        elif choice == "4" and _run_edit(
             connection,
             input_func,
             output_func,
