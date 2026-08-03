@@ -1,17 +1,21 @@
-"""Interactive CLI for literature listing, search, registration, edit, and deletion."""
+"""Interactive CLI for literature and basic tag management."""
 
 import sqlite3
 from collections.abc import Callable, Sequence
 from typing import Optional
 
 from src.duplicates import DuplicateCandidate, find_duplicate_candidates
-from src.models import Literature
+from src.models import Literature, Tag
 from src.repository import (
     add_literature,
+    create_tag,
     delete_literature,
     get_literature,
     get_literature_related_counts,
+    get_tag,
     list_literature,
+    list_tags,
+    rename_tag,
     update_literature,
 )
 from src.search import search_literature
@@ -24,10 +28,11 @@ _MAIN_MENU = """理学療法文献ライブラリ
 3. 文献登録
 4. 文献編集
 5. 文献削除
+6. タグ管理
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
 _INVALID_MENU_MESSAGE = (
-    "入力エラー: 0、1、2、3、4、5のいずれかを選択してください。"
+    "入力エラー: 0、1、2、3、4、5、6のいずれかを選択してください。"
 )
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
@@ -151,6 +156,25 @@ _DELETE_CONFIRMATION_MENU = """1. 削除手続きを続ける
 _DELETE_ACTIVE_TRANSACTION_MESSAGE = (
     "アクティブなトランザクション中は文献を削除できません。"
 )
+_TAG_MANAGEMENT_MENU = """タグ管理
+
+1. タグ一覧
+2. タグ作成
+3. タグ名称変更
+0. メインメニューに戻る"""
+_INVALID_TAG_MENU_MESSAGE = (
+    "入力エラー: 0、1、2、3のいずれかを選択してください。"
+)
+_TAG_CREATE_CONFIRMATION_MENU = """1. このタグを登録する
+0. 登録を中止する"""
+_TAG_RENAME_CONFIRMATION_MENU = """1. この内容で変更する
+0. 変更を中止する"""
+_TAG_CREATE_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中はタグを登録できません。"
+)
+_TAG_RENAME_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中はタグ名称を変更できません。"
+)
 _DUPLICATE_REASON_LABELS = {
     "doi": "DOI一致",
     "pmid": "PMID一致",
@@ -210,6 +234,11 @@ def _format_edit_literature(literature: Literature) -> str:
     )
 
 
+def _format_tag(tag: Tag) -> str:
+    """Format one tag without changing its stored values."""
+    return f"ID: {_display_value(tag.id)}\nname: {_display_value(tag.name)}"
+
+
 def _format_duplicate_candidate(candidate: DuplicateCandidate) -> str:
     """Format one duplicate candidate without changing or reordering it."""
     literature = candidate.literature
@@ -246,6 +275,20 @@ def _display_literature(
         output_func(_RECORD_SEPARATOR)
         output_func(_format_literature(literature))
     output_func(_RECORD_SEPARATOR)
+
+
+def _display_tags(
+    tags: Sequence[Tag],
+    output_func: Callable[[str], object],
+) -> None:
+    """Display tags in the order returned by the repository."""
+    if not tags:
+        output_func("登録されているタグはありません。")
+        return
+
+    for tag in tags:
+        output_func(_format_tag(tag))
+        output_func(_RECORD_SEPARATOR)
 
 
 def _optional_text(value: str) -> Optional[str]:
@@ -694,6 +737,183 @@ def _run_delete(
     return False
 
 
+def _run_tag_create(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Collect and confirm one repository-backed tag creation request."""
+    if connection.in_transaction:
+        output_func(_TAG_CREATE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        tag_name = _read_input(input_func, "タグ名（必須）: ")
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    if not tag_name.strip():
+        output_func("入力エラー: タグ名は必須です。")
+        return False
+
+    output_func("タグ登録内容を確認してください。")
+    output_func(f"name: {tag_name}")
+    output_func(_TAG_CREATE_CONFIRMATION_MENU)
+    while True:
+        try:
+            raw_confirmation = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = raw_confirmation.strip()
+        if confirmation == "0":
+            output_func("タグ登録を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    if connection.in_transaction:
+        output_func(_TAG_CREATE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        tag_id = create_tag(connection, tag_name)
+    except ValueError as error:
+        output_func(f"タグ登録エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    output_func("タグを登録または既存タグとして確認しました。")
+    output_func(f"タグID: {tag_id}")
+    return False
+
+
+def _run_tag_rename(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Collect and confirm one repository-backed tag rename request."""
+    if connection.in_transaction:
+        output_func(_TAG_RENAME_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        raw_tag_id = _read_input(input_func, "タグID（ASCII数字）: ")
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        tag_id = _required_positive_ascii_integer(raw_tag_id, "タグID")
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        tag = get_tag(connection, tag_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if tag is None:
+        output_func("対象タグが見つかりません。")
+        return False
+
+    output_func("現在のタグ情報:")
+    output_func(_format_tag(tag))
+
+    try:
+        new_name = _read_input(input_func, "新しいタグ名（必須）: ")
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    if not new_name.strip():
+        output_func("入力エラー: 新しいタグ名は必須です。")
+        return False
+
+    output_func("タグ名称の変更内容を確認してください。")
+    output_func(f"ID: {tag_id}")
+    output_func(f"変更前: {tag.name}")
+    output_func(f"変更後: {new_name}")
+    output_func(_TAG_RENAME_CONFIRMATION_MENU)
+    while True:
+        try:
+            raw_confirmation = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = raw_confirmation.strip()
+        if confirmation == "0":
+            output_func("タグ名称変更を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    if connection.in_transaction:
+        output_func(_TAG_RENAME_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        renamed = rename_tag(connection, tag_id, new_name)
+    except ValueError as error:
+        output_func(f"タグ名称変更エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if not renamed:
+        output_func("確認後に対象タグが存在しなくなりました。")
+        return False
+
+    output_func("タグ名称を変更しました。")
+    output_func(f"タグID: {tag_id}")
+    return False
+
+
+def _run_tag_management(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Run the basic tag-management submenu without recursion."""
+    while True:
+        output_func(_TAG_MANAGEMENT_MENU)
+        try:
+            raw_choice = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        choice = raw_choice.strip()
+
+        if choice == "0":
+            return False
+        if choice not in {"1", "2", "3"}:
+            output_func(_INVALID_TAG_MENU_MESSAGE)
+            continue
+
+        if choice == "1":
+            try:
+                tags = list_tags(connection)
+            except sqlite3.Error:
+                output_func(_DATABASE_ERROR_MESSAGE)
+                raise
+            _display_tags(tags, output_func)
+        elif choice == "2" and _run_tag_create(
+            connection,
+            input_func,
+            output_func,
+        ):
+            return True
+        elif choice == "3" and _run_tag_rename(
+            connection,
+            input_func,
+            output_func,
+        ):
+            return True
+
+
 def _run_search(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
@@ -771,7 +991,7 @@ def run_cli(
         if choice == "0":
             output_func(_EXIT_MESSAGE)
             return None
-        if choice not in {"1", "2", "3", "4", "5"}:
+        if choice not in {"1", "2", "3", "4", "5", "6"}:
             output_func(_INVALID_MENU_MESSAGE)
             continue
 
@@ -808,6 +1028,13 @@ def run_cli(
             output_func(_EXIT_MESSAGE)
             return None
         elif choice == "5" and _run_delete(
+            connection,
+            input_func,
+            output_func,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None
+        elif choice == "6" and _run_tag_management(
             connection,
             input_func,
             output_func,

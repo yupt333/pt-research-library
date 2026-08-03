@@ -12,7 +12,7 @@ import src.repository as repository_module
 from src.cli import run_cli
 from src.database import connect_database, initialize_database
 from src.duplicates import DuplicateCandidate, find_duplicate_candidates
-from src.models import Literature
+from src.models import Literature, Tag
 from src.repository import (
     add_literature,
     attach_tag_to_literature,
@@ -21,7 +21,10 @@ from src.repository import (
     delete_literature,
     get_literature,
     get_literature_related_counts,
+    get_tag,
     list_literature,
+    list_tags,
+    rename_tag,
     update_literature,
 )
 from src.search import search_literature
@@ -196,6 +199,42 @@ class CliTestCase(unittest.TestCase):
             str(literature_id),
             confirmation,
             str(literature_id) if confirmed_id is None else confirmed_id,
+            final_menu_choice,
+        ]
+
+    @staticmethod
+    def tag_create_actions(
+        name: str,
+        *,
+        confirmation: str = "1",
+        final_submenu_choice: str = "0",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "6",
+            "2",
+            name,
+            confirmation,
+            final_submenu_choice,
+            final_menu_choice,
+        ]
+
+    @staticmethod
+    def tag_rename_actions(
+        tag_id: int | str,
+        new_name: str,
+        *,
+        confirmation: str = "1",
+        final_submenu_choice: str = "0",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "6",
+            "3",
+            str(tag_id),
+            new_name,
+            confirmation,
+            final_submenu_choice,
             final_menu_choice,
         ]
 
@@ -376,10 +415,49 @@ class CliTestCase(unittest.TestCase):
         connection.close_calls = 0
         return connection, target_id, other_id
 
-    def schema_snapshot(self) -> list[tuple[object, ...]]:
+    def create_tracking_tag_fixture(
+        self,
+        suffix: str,
+    ) -> tuple[TrackingConnection, int, int, int]:
+        database_path = self.directory / f"tag-exception-{suffix}.db"
+        initialize_database(database_path)
+        connection = sqlite3.connect(
+            database_path,
+            factory=TrackingConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(
+            connection,
+            "PRAGMA foreign_keys = ON",
+        )
+        literature_id = add_literature(
+            connection,
+            Literature(title="Tag exception matrix literature"),
+        )
+        target_tag_id = create_tag(connection, "Shoulder")
+        other_tag_id = create_tag(connection, "Ultrasound")
+        attach_tag_to_literature(
+            connection,
+            literature_id,
+            target_tag_id,
+        )
+        create_usage_history(
+            connection,
+            literature_id,
+            "tag-exception-use",
+        )
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        return connection, literature_id, target_tag_id, other_tag_id
+
+    @staticmethod
+    def schema_snapshot_for(
+        connection: sqlite3.Connection,
+    ) -> list[tuple[object, ...]]:
         return [
             tuple(row)
-            for row in self.connection.execute(
+            for row in connection.execute(
                 """
                 SELECT type, name, tbl_name, sql
                 FROM sqlite_master
@@ -387,6 +465,9 @@ class CliTestCase(unittest.TestCase):
                 """
             ).fetchall()
         ]
+
+    def schema_snapshot(self) -> list[tuple[object, ...]]:
+        return self.schema_snapshot_for(self.connection)
 
     def test_menu_title_options_zero_exit_and_none_return(self) -> None:
         result, feeder, outputs = self.run_with_actions(["0"])
@@ -399,6 +480,7 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("3. 文献登録", outputs[0])
         self.assertIn("4. 文献編集", outputs[0])
         self.assertIn("5. 文献削除", outputs[0])
+        self.assertIn("6. タグ管理", outputs[0])
         self.assertIn("0. 終了", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
@@ -420,7 +502,7 @@ class CliTestCase(unittest.TestCase):
         _, feeder, outputs = self.run_with_actions(actions)
 
         error_message = (
-            "入力エラー: 0、1、2、3、4、5のいずれかを選択してください。"
+            "入力エラー: 0、1、2、3、4、5、6のいずれかを選択してください。"
         )
         self.assertEqual(
             outputs.count(error_message),
@@ -2887,8 +2969,9 @@ class CliTestCase(unittest.TestCase):
 
         self.assertIn("4. 文献編集", outputs[0])
         self.assertIn("5. 文献削除", outputs[0])
+        self.assertIn("6. タグ管理", outputs[0])
         self.assertIn(cli_module._INVALID_MENU_MESSAGE, outputs)
-        for choice in ("0", "1", "2", "3", "4", "5"):
+        for choice in ("0", "1", "2", "3", "4", "5", "6"):
             with self.subTest(choice=choice):
                 self.assertIn(choice, cli_module._INVALID_MENU_MESSAGE)
 
@@ -6507,6 +6590,1613 @@ class CliTestCase(unittest.TestCase):
                     "データベースエラーが発生しました。",
                     outputs,
                 )
+
+    def test_tag_submenu_contract_returns_to_main_and_loops_without_recursion(
+        self,
+    ) -> None:
+        invalid_count = 1200
+        actions = [
+            "6",
+            "",
+            "invalid",
+            *(["9"] * invalid_count),
+            " \t0\n ",
+            "0",
+        ]
+
+        _, feeder, outputs = self.run_with_actions(actions)
+
+        self.assertIn("6. タグ管理", outputs[0])
+        self.assertIn("1. タグ一覧", cli_module._TAG_MANAGEMENT_MENU)
+        self.assertIn("2. タグ作成", cli_module._TAG_MANAGEMENT_MENU)
+        self.assertIn("3. タグ名称変更", cli_module._TAG_MANAGEMENT_MENU)
+        self.assertIn(
+            "0. メインメニューに戻る",
+            cli_module._TAG_MANAGEMENT_MENU,
+        )
+        for forbidden in ("タグ削除", "タグ付与", "タグ解除", "使用履歴"):
+            self.assertNotIn(forbidden, cli_module._TAG_MANAGEMENT_MENU)
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_TAG_MENU_MESSAGE),
+            invalid_count + 2,
+        )
+        self.assertEqual(
+            outputs.count(cli_module._TAG_MANAGEMENT_MENU),
+            invalid_count + 3,
+        )
+        self.assertEqual(
+            sum("理学療法文献ライブラリ" in item for item in outputs),
+            2,
+        )
+        self.assertEqual(
+            feeder.prompts.count("選択してください: "),
+            invalid_count + 5,
+        )
+
+    def test_tag_list_uses_repository_order_and_preserves_objects_and_db(
+        self,
+    ) -> None:
+        tag_ids = {
+            name: create_tag(self.connection, name)
+            for name in ("gamma", "Beta", "alpha")
+        }
+        tags_before = list_tags(self.connection)
+        object_values_before = [vars(tag).copy() for tag in tags_before]
+        tables_before = self.table_snapshot()
+
+        with patch.object(
+            cli_module,
+            "list_tags",
+            wraps=list_tags,
+        ) as listed:
+            _, _, outputs = self.run_with_actions(["6", "1", "0", "0"])
+
+        listed.assert_called_once_with(self.connection)
+        self.assertEqual(self.table_snapshot(), tables_before)
+        self.assertEqual(
+            [vars(tag) for tag in tags_before],
+            object_values_before,
+        )
+        displayed_tags = [
+            item for item in outputs if item.startswith("ID: ")
+        ]
+        self.assertEqual(
+            displayed_tags,
+            [
+                f"ID: {tag_ids['alpha']}\nname: alpha",
+                f"ID: {tag_ids['Beta']}\nname: Beta",
+                f"ID: {tag_ids['gamma']}\nname: gamma",
+            ],
+        )
+        self.assertEqual(outputs.count(cli_module._RECORD_SEPARATOR), 3)
+        self.assertFalse(self.connection.in_transaction)
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
+
+    def test_empty_tag_list_and_pending_read_transaction_are_preserved(
+        self,
+    ) -> None:
+        _, _, empty_outputs = self.run_with_actions(["6", "1", "0", "0"])
+        self.assertIn("登録されているタグはありません。", empty_outputs)
+
+        marker = self.connection.execute(
+            "INSERT INTO tags (name) VALUES (?)",
+            ("pending-list-tag",),
+        )
+        self.assertTrue(self.connection.in_transaction)
+        _, _, outputs = self.run_with_actions(["6", "1", "0", "0"])
+
+        self.assertIn(
+            f"ID: {marker.lastrowid}\nname: pending-list-tag",
+            outputs,
+        )
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE id = ?",
+                (marker.lastrowid,),
+            ).fetchone()[0],
+            1,
+        )
+        self.connection.rollback()
+        self.assertEqual(list_tags(self.connection), [])
+
+    def test_tag_list_api_exception_boundaries(self) -> None:
+        exceptions = (
+            sqlite3.OperationalError("tag list sqlite"),
+            ValueError("tag list value"),
+            RuntimeError("tag list runtime"),
+            EOFError("tag list EOF"),
+            KeyboardInterrupt(),
+        )
+
+        for expected in exceptions:
+            with self.subTest(exception=type(expected).__name__):
+                outputs: list[str] = []
+                with patch.object(
+                    cli_module,
+                    "list_tags",
+                    side_effect=expected,
+                ) as listed:
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(["6", "1"]),
+                            output_func=outputs.append,
+                        )
+
+                self.assertIs(raised.exception, expected)
+                listed.assert_called_once_with(self.connection)
+                if isinstance(expected, sqlite3.Error):
+                    self.assertEqual(
+                        outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                        1,
+                    )
+                else:
+                    self.assertNotIn(
+                        cli_module._DATABASE_ERROR_MESSAGE,
+                        outputs,
+                    )
+                self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+
+    def test_tag_create_uses_raw_name_and_changes_only_target_tag(self) -> None:
+        literature_id = self.add_record("Tag create preserved literature")
+        existing_tag_id = create_tag(self.connection, "existing")
+        attach_tag_to_literature(
+            self.connection,
+            literature_id,
+            existing_tag_id,
+        )
+        create_usage_history(
+            self.connection,
+            literature_id,
+            "preserved-use",
+        )
+        self.connection.execute("PRAGMA user_version = 84")
+        before = self.table_snapshot()
+        schema_before = self.schema_snapshot()
+        schema_version_before = self.connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = self.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+        raw_name = "  肩関節  内部_記号!  "
+
+        with patch.object(
+            cli_module,
+            "create_tag",
+            wraps=create_tag,
+        ) as created:
+            _, _, outputs = self.run_with_actions(
+                self.tag_create_actions(raw_name)
+            )
+
+        created.assert_called_once_with(self.connection, raw_name)
+        tags = list_tags(self.connection)
+        self.assertEqual(len(tags), 2)
+        created_tag = next(tag for tag in tags if tag.id != existing_tag_id)
+        self.assertEqual(created_tag.name, "肩関節  内部_記号!")
+        self.assertEqual(
+            self.table_snapshot()["literature"],
+            before["literature"],
+        )
+        self.assertEqual(
+            self.table_snapshot()["literature_tags"],
+            before["literature_tags"],
+        )
+        self.assertEqual(
+            self.table_snapshot()["usage_history"],
+            before["usage_history"],
+        )
+        self.assertEqual(get_tag(self.connection, existing_tag_id).name, "existing")
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA schema_version").fetchone()[0],
+            schema_version_before,
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            user_version_before,
+        )
+        self.assertIn("タグ登録内容を確認してください。", outputs)
+        self.assertIn(f"name: {raw_name}", outputs)
+        self.assertIn(
+            "タグを登録または既存タグとして確認しました。",
+            outputs,
+        )
+        self.assertIn(f"タグID: {created_tag.id}", outputs)
+        self.assertFalse(self.connection.in_transaction)
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
+
+    def test_tag_create_reuses_case_insensitive_existing_id_without_changes(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Existing tag reuse")
+        existing_id = create_tag(self.connection, "Shoulder")
+        attach_tag_to_literature(self.connection, literature_id, existing_id)
+        before = self.table_snapshot()
+
+        with patch.object(
+            cli_module,
+            "create_tag",
+            wraps=create_tag,
+        ) as created:
+            _, _, outputs = self.run_with_actions(
+                self.tag_create_actions("  shoulder  ")
+            )
+
+        created.assert_called_once_with(self.connection, "  shoulder  ")
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            list_tags(self.connection),
+            [Tag(id=existing_id, name="Shoulder")],
+        )
+        self.assertIn(f"タグID: {existing_id}", outputs)
+        self.assertNotIn("タグを新規作成しました。", outputs)
+
+    def test_tag_create_blank_confirmation_loop_and_cancel_do_not_write(
+        self,
+    ) -> None:
+        for blank_name in ("", " ", "\t\n"):
+            with self.subTest(blank_name=repr(blank_name)):
+                before = self.table_snapshot()
+                with patch.object(cli_module, "create_tag") as created:
+                    _, _, outputs = self.run_with_actions(
+                        ["6", "2", blank_name, "0", "0"]
+                    )
+                created.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertIn("入力エラー: タグ名は必須です。", outputs)
+
+        before = self.table_snapshot()
+        invalid_count = 1200
+        with patch.object(cli_module, "create_tag") as created:
+            _, feeder, outputs = self.run_with_actions(
+                [
+                    "6",
+                    "2",
+                    "cancelled tag",
+                    "",
+                    "invalid",
+                    *(["9"] * invalid_count),
+                    " \t0\n ",
+                    "0",
+                    "0",
+                ]
+            )
+
+        created.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_CONFIRMATION_MESSAGE),
+            invalid_count + 2,
+        )
+        self.assertIn("タグ登録を中止しました。", outputs)
+        self.assertEqual(
+            feeder.prompts.count("選択してください: "),
+            invalid_count + 7,
+        )
+
+    def test_tag_create_rejects_initial_and_late_transactions_with_markers(
+        self,
+    ) -> None:
+        initial_marker = self.connection.execute(
+            "INSERT INTO tags (name) VALUES (?)",
+            ("pending-create-initial",),
+        )
+        self.assertTrue(self.connection.in_transaction)
+        with patch.object(cli_module, "create_tag") as created:
+            _, feeder, outputs = self.run_with_actions(["6", "2", "0", "0"])
+
+        created.assert_not_called()
+        self.assertEqual(
+            feeder.prompts,
+            [
+                "選択してください: ",
+                "選択してください: ",
+                "選択してください: ",
+                "選択してください: ",
+            ],
+        )
+        self.assertIn(
+            cli_module._TAG_CREATE_ACTIVE_TRANSACTION_MESSAGE,
+            outputs,
+        )
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE id = ?",
+                (initial_marker.lastrowid,),
+            ).fetchone()[0],
+            1,
+        )
+        self.connection.rollback()
+
+        feeder = InputFeeder(
+            ["6", "2", "late create", "1", "0", "0"]
+        )
+        late_marker_ids: list[int] = []
+
+        def input_func(prompt: str) -> str:
+            value = feeder(prompt)
+            if value == "1" and len(feeder.prompts) == 4:
+                self.assertFalse(self.connection.in_transaction)
+                marker = self.connection.execute(
+                    "INSERT INTO tags (name) VALUES (?)",
+                    ("pending-create-late",),
+                )
+                late_marker_ids.append(marker.lastrowid)
+                self.assertTrue(self.connection.in_transaction)
+            return value
+
+        outputs = []
+        with patch.object(cli_module, "create_tag") as created:
+            result = run_cli(
+                self.connection,
+                input_func=input_func,
+                output_func=outputs.append,
+            )
+
+        self.assertIsNone(result)
+        created.assert_not_called()
+        self.assertEqual(len(late_marker_ids), 1)
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE id = ?",
+                (late_marker_ids[0],),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertIn(
+            cli_module._TAG_CREATE_ACTIVE_TRANSACTION_MESSAGE,
+            outputs,
+        )
+        self.connection.rollback()
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE id = ?",
+                (late_marker_ids[0],),
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_tag_create_api_exception_boundaries(self) -> None:
+        exceptions = (
+            ValueError("create tag value"),
+            sqlite3.OperationalError("create tag sqlite"),
+            RuntimeError("create tag runtime"),
+            EOFError("create tag EOF"),
+            KeyboardInterrupt(),
+        )
+
+        for expected in exceptions:
+            with self.subTest(exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+                actions: list[object] = ["6", "2", "api tag", "1"]
+                if isinstance(expected, ValueError):
+                    actions.extend(["0", "0"])
+                with patch.object(
+                    cli_module,
+                    "create_tag",
+                    side_effect=expected,
+                ) as created:
+                    if isinstance(expected, ValueError):
+                        result = run_cli(
+                            self.connection,
+                            input_func=InputFeeder(actions),
+                            output_func=outputs.append,
+                        )
+                        self.assertIsNone(result)
+                        self.assertTrue(
+                            any(
+                                item.startswith("タグ登録エラー: ")
+                                for item in outputs
+                            )
+                        )
+                    else:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+                        self.assertIs(raised.exception, expected)
+
+                created.assert_called_once_with(self.connection, "api tag")
+                self.assertEqual(self.table_snapshot(), before)
+                if isinstance(expected, sqlite3.Error):
+                    self.assertEqual(
+                        outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                        1,
+                    )
+                elif not isinstance(expected, ValueError):
+                    self.assertNotIn(
+                        cli_module._DATABASE_ERROR_MESSAGE,
+                        outputs,
+                    )
+
+    def test_tag_create_success_output_failure_keeps_committed_tag(self) -> None:
+        connection, _, _, _ = self.create_tracking_tag_fixture(
+            "create-success-output"
+        )
+        try:
+            connection.execute("PRAGMA user_version = 86")
+            before = self.table_snapshot_for(connection)
+            schema_before = self.schema_snapshot_for(connection)
+            schema_version_before = connection.execute(
+                "PRAGMA schema_version"
+            ).fetchone()[0]
+            user_version_before = connection.execute(
+                "PRAGMA user_version"
+            ).fetchone()[0]
+            before_count = len(list_tags(connection))
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            expected = RuntimeError("tag create success output failure")
+            outputs: list[str] = []
+
+            def output_func(message: str) -> None:
+                outputs.append(message)
+                if message == "タグを登録または既存タグとして確認しました。":
+                    raise expected
+
+            with patch.object(
+                cli_module,
+                "create_tag",
+                wraps=create_tag,
+            ) as created:
+                with self.assertRaises(RuntimeError) as raised:
+                    run_cli(
+                        connection,
+                        input_func=InputFeeder(
+                            ["6", "2", "committed-created-tag", "1"]
+                        ),
+                        output_func=output_func,
+                    )
+
+            self.assertIs(raised.exception, expected)
+            created.assert_called_once_with(
+                connection,
+                "committed-created-tag",
+            )
+            after = self.table_snapshot_for(connection)
+            created_rows = [
+                row
+                for row in after["tags"]
+                if row not in before["tags"]
+            ]
+            self.assertEqual(len(created_rows), 1)
+            created_id, created_name = created_rows[0]
+            self.assertEqual(
+                get_tag(connection, created_id),
+                Tag(id=created_id, name="committed-created-tag"),
+            )
+            expected_tags = sorted(
+                [*before["tags"], (created_id, created_name)],
+                key=lambda row: row[0],
+            )
+            self.assertEqual(after["tags"], expected_tags)
+            self.assertEqual(len(list_tags(connection)), before_count + 1)
+            self.assertEqual(
+                [
+                    tag.name
+                    for tag in list_tags(connection)
+                    if tag.name == "committed-created-tag"
+                ],
+                ["committed-created-tag"],
+            )
+            self.assertEqual(after["literature"], before["literature"])
+            self.assertEqual(
+                after["literature_tags"],
+                before["literature_tags"],
+            )
+            self.assertEqual(
+                after["usage_history"],
+                before["usage_history"],
+            )
+            self.assertEqual(
+                self.schema_snapshot_for(connection),
+                schema_before,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA schema_version").fetchone()[0],
+                schema_version_before,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                user_version_before,
+            )
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertEqual(
+                outputs.count(
+                    "タグを登録または既存タグとして確認しました。"
+                ),
+                1,
+            )
+            self.assertFalse(
+                any(item.startswith("タグ登録エラー: ") for item in outputs)
+            )
+            self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+            self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_tag_rename_validates_id_and_handles_missing_target(self) -> None:
+        tag_id = create_tag(self.connection, "Rename ID target")
+        invalid_values = (
+            "",
+            "0",
+            "+1",
+            "-1",
+            "1.5",
+            "1e3",
+            "１",
+            "١",
+            "id",
+            "1x",
+        )
+
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                before = self.table_snapshot()
+                with (
+                    patch.object(cli_module, "get_tag") as retrieved,
+                    patch.object(cli_module, "rename_tag") as renamed,
+                ):
+                    _, _, outputs = self.run_with_actions(
+                        ["6", "3", invalid_value, "0", "0"]
+                    )
+                retrieved.assert_not_called()
+                renamed.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertTrue(
+                    any(
+                        item.startswith("入力エラー: ")
+                        and "タグID" in item
+                        and "ASCII" in item
+                        for item in outputs
+                    )
+                )
+
+        with (
+            patch.object(
+                cli_module,
+                "get_tag",
+                wraps=get_tag,
+            ) as retrieved,
+            patch.object(cli_module, "rename_tag") as renamed,
+        ):
+            _, _, outputs = self.run_with_actions(
+                ["6", "3", "999999", "0", "0"]
+            )
+        retrieved.assert_called_once_with(self.connection, 999999)
+        renamed.assert_not_called()
+        self.assertIn("対象タグが見つかりません。", outputs)
+        self.assertEqual(
+            get_tag(self.connection, tag_id),
+            Tag(id=tag_id, name="Rename ID target"),
+        )
+
+    def test_tag_rename_success_preserves_id_relationships_and_other_data(
+        self,
+    ) -> None:
+        target_literature_id = self.add_record("Rename target literature")
+        other_literature_id = self.add_record("Rename other literature")
+        target_tag_id = create_tag(self.connection, "Shoulder")
+        other_tag_id = create_tag(self.connection, "Other")
+        attach_tag_to_literature(
+            self.connection,
+            target_literature_id,
+            target_tag_id,
+        )
+        attach_tag_to_literature(
+            self.connection,
+            other_literature_id,
+            other_tag_id,
+        )
+        create_usage_history(
+            self.connection,
+            target_literature_id,
+            "rename-preserved-use",
+        )
+        self.connection.execute("PRAGMA user_version = 85")
+        before = self.table_snapshot()
+        schema_before = self.schema_snapshot()
+        raw_new_name = "  ＳＨＯＵＬＤＥＲ  内部_記号!  "
+
+        with (
+            patch.object(
+                cli_module,
+                "get_tag",
+                wraps=get_tag,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "rename_tag",
+                wraps=rename_tag,
+            ) as renamed,
+        ):
+            _, _, outputs = self.run_with_actions(
+                self.tag_rename_actions(
+                    f" \t00{target_tag_id}\n ",
+                    raw_new_name,
+                )
+            )
+
+        retrieved.assert_called_once_with(self.connection, target_tag_id)
+        renamed.assert_called_once_with(
+            self.connection,
+            target_tag_id,
+            raw_new_name,
+        )
+        self.assertEqual(
+            get_tag(self.connection, target_tag_id),
+            Tag(id=target_tag_id, name="ＳＨＯＵＬＤＥＲ  内部_記号!"),
+        )
+        self.assertEqual(
+            get_tag(self.connection, other_tag_id),
+            Tag(id=other_tag_id, name="Other"),
+        )
+        after = self.table_snapshot()
+        self.assertEqual(after["literature"], before["literature"])
+        self.assertEqual(after["literature_tags"], before["literature_tags"])
+        self.assertEqual(after["usage_history"], before["usage_history"])
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            85,
+        )
+        self.assertIn("現在のタグ情報:", outputs)
+        self.assertIn(f"ID: {target_tag_id}\nname: Shoulder", outputs)
+        self.assertIn("タグ名称の変更内容を確認してください。", outputs)
+        self.assertIn(f"変更後: {raw_new_name}", outputs)
+        self.assertIn("タグ名称を変更しました。", outputs)
+        self.assertIn(f"タグID: {target_tag_id}", outputs)
+        self.assertFalse(self.connection.in_transaction)
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
+
+    def test_tag_rename_blank_confirmation_cancel_and_false_are_safe(
+        self,
+    ) -> None:
+        tag_id = create_tag(self.connection, "Rename safety")
+        before = self.table_snapshot()
+
+        for blank_name in ("", " ", "\t\n"):
+            with self.subTest(blank_name=repr(blank_name)):
+                with patch.object(cli_module, "rename_tag") as renamed:
+                    _, _, outputs = self.run_with_actions(
+                        [
+                            "6",
+                            "3",
+                            str(tag_id),
+                            blank_name,
+                            "0",
+                            "0",
+                        ]
+                    )
+                renamed.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertIn(
+                    "入力エラー: 新しいタグ名は必須です。",
+                    outputs,
+                )
+
+        invalid_count = 1200
+        with patch.object(cli_module, "rename_tag") as renamed:
+            _, _, outputs = self.run_with_actions(
+                [
+                    "6",
+                    "3",
+                    str(tag_id),
+                    "Cancelled rename",
+                    "",
+                    "invalid",
+                    *(["9"] * invalid_count),
+                    " 0 ",
+                    "0",
+                    "0",
+                ]
+            )
+        renamed.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_CONFIRMATION_MESSAGE),
+            invalid_count + 2,
+        )
+        self.assertIn("タグ名称変更を中止しました。", outputs)
+
+        with patch.object(
+            cli_module,
+            "rename_tag",
+            return_value=False,
+        ) as renamed:
+            _, _, outputs = self.run_with_actions(
+                self.tag_rename_actions(tag_id, "Disappeared rename")
+            )
+        renamed.assert_called_once_with(
+            self.connection,
+            tag_id,
+            "Disappeared rename",
+        )
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertIn("確認後に対象タグが存在しなくなりました。", outputs)
+        self.assertNotIn("タグ名称を変更しました。", outputs)
+
+    def test_tag_rename_rejects_initial_and_late_transactions_with_markers(
+        self,
+    ) -> None:
+        target_id = create_tag(self.connection, "Transaction rename")
+        initial_marker = self.connection.execute(
+            "INSERT INTO tags (name) VALUES (?)",
+            ("pending-rename-initial",),
+        )
+        target_before = get_tag(self.connection, target_id)
+        self.assertTrue(self.connection.in_transaction)
+
+        with (
+            patch.object(cli_module, "get_tag") as retrieved,
+            patch.object(cli_module, "rename_tag") as renamed,
+        ):
+            _, _, outputs = self.run_with_actions(["6", "3", "0", "0"])
+
+        retrieved.assert_not_called()
+        renamed.assert_not_called()
+        self.assertEqual(get_tag(self.connection, target_id), target_before)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE id = ?",
+                (initial_marker.lastrowid,),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertTrue(self.connection.in_transaction)
+        self.assertIn(
+            cli_module._TAG_RENAME_ACTIVE_TRANSACTION_MESSAGE,
+            outputs,
+        )
+        self.connection.rollback()
+
+        feeder = InputFeeder(
+            ["6", "3", str(target_id), "Late renamed", "1", "0", "0"]
+        )
+        marker_ids: list[int] = []
+
+        def input_func(prompt: str) -> str:
+            value = feeder(prompt)
+            if value == "1" and len(feeder.prompts) == 5:
+                self.assertFalse(self.connection.in_transaction)
+                marker = self.connection.execute(
+                    "INSERT INTO tags (name) VALUES (?)",
+                    ("pending-rename-late",),
+                )
+                marker_ids.append(marker.lastrowid)
+                self.assertTrue(self.connection.in_transaction)
+            return value
+
+        outputs = []
+        with patch.object(cli_module, "rename_tag") as renamed:
+            result = run_cli(
+                self.connection,
+                input_func=input_func,
+                output_func=outputs.append,
+            )
+
+        self.assertIsNone(result)
+        renamed.assert_not_called()
+        self.assertEqual(get_tag(self.connection, target_id), target_before)
+        self.assertEqual(len(marker_ids), 1)
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE id = ?",
+                (marker_ids[0],),
+            ).fetchone()[0],
+            1,
+        )
+        self.assertIn(
+            cli_module._TAG_RENAME_ACTIVE_TRANSACTION_MESSAGE,
+            outputs,
+        )
+        self.connection.rollback()
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE id = ?",
+                (marker_ids[0],),
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_tag_get_and_rename_api_exception_boundaries(self) -> None:
+        tag_id = create_tag(self.connection, "API rename target")
+        exceptions = (
+            sqlite3.OperationalError("tag API sqlite"),
+            ValueError("tag API value"),
+            RuntimeError("tag API runtime"),
+            EOFError("tag API EOF"),
+            KeyboardInterrupt(),
+        )
+
+        for api_name in ("get_tag", "rename_tag"):
+            for expected in exceptions:
+                with self.subTest(
+                    api=api_name,
+                    exception=type(expected).__name__,
+                ):
+                    before = self.table_snapshot()
+                    outputs: list[str] = []
+                    actions: list[object] = ["6", "3", str(tag_id)]
+                    if api_name == "rename_tag":
+                        actions.extend(["Renamed API", "1"])
+                        if isinstance(expected, ValueError):
+                            actions.extend(["0", "0"])
+                    with patch.object(
+                        cli_module,
+                        api_name,
+                        side_effect=expected,
+                    ) as failed_api:
+                        if api_name == "rename_tag" and isinstance(
+                            expected,
+                            ValueError,
+                        ):
+                            result = run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+                            self.assertIsNone(result)
+                            self.assertTrue(
+                                any(
+                                    item.startswith(
+                                        "タグ名称変更エラー: "
+                                    )
+                                    for item in outputs
+                                )
+                            )
+                        else:
+                            with self.assertRaises(type(expected)) as raised:
+                                run_cli(
+                                    self.connection,
+                                    input_func=InputFeeder(actions),
+                                    output_func=outputs.append,
+                                )
+                            self.assertIs(raised.exception, expected)
+
+                    failed_api.assert_called_once()
+                    self.assertEqual(self.table_snapshot(), before)
+                    if isinstance(expected, sqlite3.Error):
+                        self.assertEqual(
+                            outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                            1,
+                        )
+                    elif not (
+                        api_name == "rename_tag"
+                        and isinstance(expected, ValueError)
+                    ):
+                        self.assertNotIn(
+                            cli_module._DATABASE_ERROR_MESSAGE,
+                            outputs,
+                        )
+
+    def test_tag_rename_real_duplicate_value_error_preserves_database(
+        self,
+    ) -> None:
+        shoulder_id = create_tag(self.connection, "Shoulder")
+        ultrasound_id = create_tag(self.connection, "Ultrasound")
+        before = self.table_snapshot()
+
+        _, _, outputs = self.run_with_actions(
+            self.tag_rename_actions(ultrasound_id, "  shoulder  ")
+        )
+
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            get_tag(self.connection, shoulder_id),
+            Tag(id=shoulder_id, name="Shoulder"),
+        )
+        self.assertEqual(
+            get_tag(self.connection, ultrasound_id),
+            Tag(id=ultrasound_id, name="Ultrasound"),
+        )
+        self.assertTrue(
+            any(
+                item.startswith("タグ名称変更エラー: ")
+                and "既に存在" in item
+                for item in outputs
+            )
+        )
+        self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
+    def test_tag_rename_success_output_failure_keeps_committed_name(self) -> None:
+        connection, _, target_id, other_tag_id = (
+            self.create_tracking_tag_fixture("rename-success-output")
+        )
+        try:
+            other_literature_id = add_literature(
+                connection,
+                Literature(title="Rename output other literature"),
+            )
+            attach_tag_to_literature(
+                connection,
+                other_literature_id,
+                other_tag_id,
+            )
+            create_usage_history(
+                connection,
+                other_literature_id,
+                "rename-output-other-use",
+            )
+            connection.execute("PRAGMA user_version = 87")
+            before = self.table_snapshot_for(connection)
+            schema_before = self.schema_snapshot_for(connection)
+            schema_version_before = connection.execute(
+                "PRAGMA schema_version"
+            ).fetchone()[0]
+            user_version_before = connection.execute(
+                "PRAGMA user_version"
+            ).fetchone()[0]
+            target_relationships_before = [
+                row
+                for row in before["literature_tags"]
+                if row[1] == target_id
+            ]
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            expected = RuntimeError("tag rename success output failure")
+            outputs: list[str] = []
+
+            def output_func(message: str) -> None:
+                outputs.append(message)
+                if message == "タグ名称を変更しました。":
+                    raise expected
+
+            with patch.object(
+                cli_module,
+                "rename_tag",
+                wraps=rename_tag,
+            ) as renamed:
+                with self.assertRaises(RuntimeError) as raised:
+                    run_cli(
+                        connection,
+                        input_func=InputFeeder(
+                            [
+                                "6",
+                                "3",
+                                str(target_id),
+                                "Committed renamed tag",
+                                "1",
+                            ]
+                        ),
+                        output_func=output_func,
+                    )
+
+            self.assertIs(raised.exception, expected)
+            renamed.assert_called_once_with(
+                connection,
+                target_id,
+                "Committed renamed tag",
+            )
+            after = self.table_snapshot_for(connection)
+            expected_tags = [
+                (
+                    row[0],
+                    "Committed renamed tag"
+                    if row[0] == target_id
+                    else row[1],
+                )
+                for row in before["tags"]
+            ]
+            self.assertEqual(after["tags"], expected_tags)
+            self.assertEqual(
+                get_tag(connection, target_id),
+                Tag(id=target_id, name="Committed renamed tag"),
+            )
+            self.assertEqual(
+                get_tag(connection, other_tag_id),
+                Tag(id=other_tag_id, name="Ultrasound"),
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM literature_tags WHERE tag_id = ?",
+                    (target_id,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(after["literature"], before["literature"])
+            self.assertEqual(
+                after["literature_tags"],
+                before["literature_tags"],
+            )
+            self.assertEqual(
+                [
+                    row
+                    for row in after["literature_tags"]
+                    if row[1] == target_id
+                ],
+                target_relationships_before,
+            )
+            self.assertEqual(
+                after["usage_history"],
+                before["usage_history"],
+            )
+            self.assertEqual(
+                self.schema_snapshot_for(connection),
+                schema_before,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA schema_version").fetchone()[0],
+                schema_version_before,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                user_version_before,
+            )
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertEqual(outputs.count("タグ名称を変更しました。"), 1)
+            self.assertFalse(
+                any(
+                    item.startswith("タグ名称変更エラー: ")
+                    for item in outputs
+                )
+            )
+            self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+            self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_tag_input_exception_matrix_preserves_state_and_boundaries(
+        self,
+    ) -> None:
+        positions = (
+            (
+                "submenu",
+                lambda _: ["6"],
+                ["選択してください: ", "選択してください: "],
+            ),
+            (
+                "create_name",
+                lambda _: ["6", "2"],
+                [
+                    "選択してください: ",
+                    "選択してください: ",
+                    "タグ名（必須）: ",
+                ],
+            ),
+            (
+                "create_confirmation",
+                lambda _: ["6", "2", "Input tag"],
+                [
+                    "選択してください: ",
+                    "選択してください: ",
+                    "タグ名（必須）: ",
+                    "選択してください: ",
+                ],
+            ),
+            (
+                "rename_id",
+                lambda _: ["6", "3"],
+                [
+                    "選択してください: ",
+                    "選択してください: ",
+                    "タグID（ASCII数字）: ",
+                ],
+            ),
+            (
+                "rename_new_name",
+                lambda tag_id: ["6", "3", str(tag_id)],
+                [
+                    "選択してください: ",
+                    "選択してください: ",
+                    "タグID（ASCII数字）: ",
+                    "新しいタグ名（必須）: ",
+                ],
+            ),
+            (
+                "rename_confirmation",
+                lambda tag_id: ["6", "3", str(tag_id), "Input renamed"],
+                [
+                    "選択してください: ",
+                    "選択してください: ",
+                    "タグID（ASCII数字）: ",
+                    "新しいタグ名（必須）: ",
+                    "選択してください: ",
+                ],
+            ),
+        )
+        exception_types = (
+            ("EOFError", EOFError),
+            ("KeyboardInterrupt", KeyboardInterrupt),
+            ("ValueError", ValueError),
+            ("RuntimeError", RuntimeError),
+            ("sqlite3.Error", sqlite3.Error),
+        )
+        database_paths: set[Path] = set()
+
+        for position, prefix_factory, expected_prompts in positions:
+            for exception_name, exception_type in exception_types:
+                with self.subTest(
+                    position=position,
+                    exception=exception_name,
+                ):
+                    with tempfile.TemporaryDirectory() as temporary_directory:
+                        database_path = Path(temporary_directory) / "test.db"
+                        self.assertNotIn(database_path, database_paths)
+                        database_paths.add(database_path)
+                        initialize_database(database_path)
+                        connection = connect_database(database_path)
+                        try:
+                            literature_id = add_literature(
+                                connection,
+                                Literature(title="Input matrix literature"),
+                            )
+                            target_id = create_tag(
+                                connection,
+                                "Input matrix target",
+                            )
+                            attach_tag_to_literature(
+                                connection,
+                                literature_id,
+                                target_id,
+                            )
+                            create_usage_history(
+                                connection,
+                                literature_id,
+                                "input-matrix-use",
+                            )
+                            before = self.table_snapshot_for(connection)
+                            expected = exception_type(
+                                f"{position} {exception_name} input failure"
+                            )
+                            outputs: list[str] = []
+                            feeder = InputFeeder(
+                                [*prefix_factory(target_id), expected]
+                            )
+
+                            with (
+                                patch.object(
+                                    cli_module,
+                                    "create_tag",
+                                    wraps=cli_module.create_tag,
+                                ) as created,
+                                patch.object(
+                                    cli_module,
+                                    "rename_tag",
+                                    wraps=cli_module.rename_tag,
+                                ) as renamed,
+                            ):
+                                if isinstance(
+                                    expected,
+                                    (EOFError, KeyboardInterrupt),
+                                ):
+                                    result = run_cli(
+                                        connection,
+                                        input_func=feeder,
+                                        output_func=outputs.append,
+                                    )
+                                    self.assertIsNone(result)
+                                    self.assertEqual(
+                                        outputs.count(cli_module._EXIT_MESSAGE),
+                                        1,
+                                    )
+                                else:
+                                    with self.assertRaises(
+                                        exception_type
+                                    ) as raised:
+                                        run_cli(
+                                            connection,
+                                            input_func=feeder,
+                                            output_func=outputs.append,
+                                        )
+                                    self.assertIs(raised.exception, expected)
+                                    self.assertNotIn(
+                                        cli_module._EXIT_MESSAGE,
+                                        outputs,
+                                    )
+
+                            self.assertEqual(feeder.prompts, expected_prompts)
+                            created.assert_not_called()
+                            renamed.assert_not_called()
+                            self.assertEqual(
+                                self.table_snapshot_for(connection),
+                                before,
+                            )
+                            self.assertNotIn(
+                                cli_module._DATABASE_ERROR_MESSAGE,
+                                outputs,
+                            )
+                            self.assertFalse(
+                                any(
+                                    item.startswith("入力エラー: ")
+                                    or item.startswith("タグ登録エラー: ")
+                                    or item.startswith("タグ名称変更エラー: ")
+                                    for item in outputs
+                                )
+                            )
+                            self.assertFalse(connection.in_transaction)
+                            self.assertEqual(
+                                connection.execute("SELECT 1").fetchone()[0],
+                                1,
+                            )
+                        finally:
+                            connection.close()
+
+        self.assertEqual(
+            len(database_paths),
+            len(positions) * len(exception_types),
+        )
+
+    def test_tag_output_exception_matrix_propagates_without_retry(
+        self,
+    ) -> None:
+        stages = (
+            "submenu_menu",
+            "list_nonempty",
+            "list_empty",
+            "create_initial_transaction",
+            "create_name_error",
+            "create_confirmation",
+            "create_cancel",
+            "create_api_error",
+            "create_success",
+            "rename_initial_transaction",
+            "rename_id_error",
+            "rename_missing",
+            "rename_current",
+            "rename_name_error",
+            "rename_confirmation",
+            "rename_cancel",
+            "rename_api_error",
+            "rename_false",
+            "rename_success",
+        )
+
+        for stage_index, stage in enumerate(stages):
+            with self.subTest(stage=stage):
+                connection, _, target_id, _ = self.create_tracking_tag_fixture(
+                    f"output-matrix-{stage_index}"
+                )
+                try:
+                    expected = RuntimeError(f"{stage} output failure")
+                    api_error = ValueError(f"{stage} API value failure")
+                    list_side_effect = list_tags
+                    create_side_effect = create_tag
+                    get_side_effect = get_tag
+                    rename_side_effect = rename_tag
+
+                    if stage == "submenu_menu":
+                        actions: list[object] = ["6"]
+                        failing_message = cli_module._TAG_MANAGEMENT_MENU
+                    elif stage == "list_nonempty":
+                        actions = ["6", "1"]
+                        failing_message = "ID: 1\nname: Shoulder"
+                    elif stage == "list_empty":
+                        actions = ["6", "1"]
+                        failing_message = "登録されているタグはありません。"
+                        list_side_effect = lambda _: []
+                    elif stage == "create_initial_transaction":
+                        connection.execute(
+                            "INSERT INTO tags (name) VALUES (?)",
+                            ("pending-create-output",),
+                        )
+                        actions = ["6", "2"]
+                        failing_message = (
+                            cli_module._TAG_CREATE_ACTIVE_TRANSACTION_MESSAGE
+                        )
+                    elif stage == "create_name_error":
+                        actions = ["6", "2", ""]
+                        failing_message = "入力エラー: タグ名は必須です。"
+                    elif stage == "create_confirmation":
+                        actions = ["6", "2", "Output create"]
+                        failing_message = "タグ登録内容を確認してください。"
+                    elif stage == "create_cancel":
+                        actions = ["6", "2", "Output create", "0"]
+                        failing_message = "タグ登録を中止しました。"
+                    elif stage == "create_api_error":
+                        actions = ["6", "2", "Output create", "1"]
+                        failing_message = f"タグ登録エラー: {api_error}"
+
+                        def create_side_effect(*args: object) -> int:
+                            raise api_error
+
+                    elif stage == "create_success":
+                        actions = ["6", "2", "Output created", "1"]
+                        failing_message = (
+                            "タグを登録または既存タグとして確認しました。"
+                        )
+                    elif stage == "rename_initial_transaction":
+                        connection.execute(
+                            "INSERT INTO tags (name) VALUES (?)",
+                            ("pending-rename-output",),
+                        )
+                        actions = ["6", "3"]
+                        failing_message = (
+                            cli_module._TAG_RENAME_ACTIVE_TRANSACTION_MESSAGE
+                        )
+                    elif stage == "rename_id_error":
+                        actions = ["6", "3", "invalid"]
+                        failing_message = (
+                            "入力エラー: タグIDは1以上の"
+                            "ASCII数字だけで入力してください。"
+                        )
+                    elif stage == "rename_missing":
+                        actions = ["6", "3", "999999"]
+                        failing_message = "対象タグが見つかりません。"
+                    elif stage == "rename_current":
+                        actions = ["6", "3", str(target_id)]
+                        failing_message = "現在のタグ情報:"
+                    elif stage == "rename_name_error":
+                        actions = ["6", "3", str(target_id), ""]
+                        failing_message = (
+                            "入力エラー: 新しいタグ名は必須です。"
+                        )
+                    elif stage == "rename_confirmation":
+                        actions = [
+                            "6",
+                            "3",
+                            str(target_id),
+                            "Output renamed",
+                        ]
+                        failing_message = (
+                            "タグ名称の変更内容を確認してください。"
+                        )
+                    elif stage == "rename_cancel":
+                        actions = [
+                            "6",
+                            "3",
+                            str(target_id),
+                            "Output renamed",
+                            "0",
+                        ]
+                        failing_message = "タグ名称変更を中止しました。"
+                    elif stage == "rename_api_error":
+                        actions = [
+                            "6",
+                            "3",
+                            str(target_id),
+                            "Output renamed",
+                            "1",
+                        ]
+                        failing_message = f"タグ名称変更エラー: {api_error}"
+
+                        def rename_side_effect(*args: object) -> bool:
+                            raise api_error
+
+                    elif stage == "rename_false":
+                        actions = [
+                            "6",
+                            "3",
+                            str(target_id),
+                            "Output renamed",
+                            "1",
+                        ]
+                        failing_message = (
+                            "確認後に対象タグが存在しなくなりました。"
+                        )
+                        rename_side_effect = lambda *args: False
+                    else:
+                        actions = [
+                            "6",
+                            "3",
+                            str(target_id),
+                            "Output renamed",
+                            "1",
+                        ]
+                        failing_message = "タグ名称を変更しました。"
+
+                    before = self.table_snapshot_for(connection)
+                    outputs: list[str] = []
+
+                    def output_func(message: str) -> None:
+                        outputs.append(message)
+                        if message == failing_message:
+                            raise expected
+
+                    with (
+                        patch.object(
+                            cli_module,
+                            "list_tags",
+                            side_effect=list_side_effect,
+                        ) as listed,
+                        patch.object(
+                            cli_module,
+                            "create_tag",
+                            side_effect=create_side_effect,
+                        ) as created,
+                        patch.object(
+                            cli_module,
+                            "get_tag",
+                            side_effect=get_side_effect,
+                        ) as retrieved,
+                        patch.object(
+                            cli_module,
+                            "rename_tag",
+                            side_effect=rename_side_effect,
+                        ) as renamed,
+                    ):
+                        with self.assertRaises(RuntimeError) as raised:
+                            run_cli(
+                                connection,
+                                input_func=InputFeeder(actions),
+                                output_func=output_func,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    self.assertEqual(outputs.count(failing_message), 1)
+                    self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+                    self.assertNotIn(
+                        cli_module._DATABASE_ERROR_MESSAGE,
+                        outputs,
+                    )
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                    if stage == "create_success":
+                        created.assert_called_once()
+                        self.assertEqual(
+                            get_tag(
+                                connection,
+                                max(tag.id for tag in list_tags(connection)),
+                            ).name,
+                            "Output created",
+                        )
+                        self.assertFalse(connection.in_transaction)
+                    elif stage == "rename_success":
+                        renamed.assert_called_once()
+                        self.assertEqual(
+                            get_tag(connection, target_id).name,
+                            "Output renamed",
+                        )
+                        self.assertFalse(connection.in_transaction)
+                    else:
+                        self.assertEqual(
+                            self.table_snapshot_for(connection),
+                            before,
+                        )
+                finally:
+                    if connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
+
+    def test_tag_output_interruptions_and_sqlite_errors_are_not_reclassified(
+        self,
+    ) -> None:
+        tag_id = create_tag(self.connection, "Output boundary target")
+        exceptions = (
+            EOFError("tag output EOF"),
+            KeyboardInterrupt(),
+            sqlite3.OperationalError("tag output sqlite"),
+        )
+
+        for expected in exceptions:
+            with self.subTest(exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+
+                def output_func(message: str) -> None:
+                    outputs.append(message)
+                    if message == "現在のタグ情報:":
+                        raise expected
+
+                with patch.object(cli_module, "rename_tag") as renamed:
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(
+                                ["6", "3", str(tag_id)]
+                            ),
+                            output_func=output_func,
+                        )
+
+                self.assertIs(raised.exception, expected)
+                renamed.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+                self.assertNotIn(
+                    cli_module._DATABASE_ERROR_MESSAGE,
+                    outputs,
+                )
+
+    def test_tag_database_error_output_failure_propagates_output_error(
+        self,
+    ) -> None:
+        tag_id = create_tag(self.connection, "DB output target")
+        cases = (
+            ("list_tags", ["6", "1"]),
+            ("create_tag", ["6", "2", "DB create", "1"]),
+            ("get_tag", ["6", "3", str(tag_id)]),
+            (
+                "rename_tag",
+                ["6", "3", str(tag_id), "DB rename", "1"],
+            ),
+        )
+
+        for api_name, actions in cases:
+            with self.subTest(api=api_name):
+                database_error = sqlite3.OperationalError(
+                    f"{api_name} database failure"
+                )
+                output_error = RuntimeError(
+                    f"{api_name} database output failure"
+                )
+
+                def output_func(message: str) -> None:
+                    if message == cli_module._DATABASE_ERROR_MESSAGE:
+                        raise output_error
+
+                with patch.object(
+                    cli_module,
+                    api_name,
+                    side_effect=database_error,
+                ):
+                    with self.assertRaises(RuntimeError) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(actions),
+                            output_func=output_func,
+                        )
+
+                self.assertIs(raised.exception, output_error)
+                self.assertIsNot(raised.exception, database_error)
+
+    def test_tag_transaction_rejections_call_no_lifecycle_methods(self) -> None:
+        connection, _, target_id, _ = self.create_tracking_tag_fixture(
+            "transaction-lifecycle"
+        )
+        try:
+            marker = connection.execute(
+                "INSERT INTO tags (name) VALUES (?)",
+                ("pending-tag-lifecycle",),
+            )
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+
+            _, _, outputs = self.run_with_actions(
+                ["6", "2", "3", "0", "0"],
+                connection=connection,
+            )
+
+            self.assertIn(
+                cli_module._TAG_CREATE_ACTIVE_TRANSACTION_MESSAGE,
+                outputs,
+            )
+            self.assertIn(
+                cli_module._TAG_RENAME_ACTIVE_TRANSACTION_MESSAGE,
+                outputs,
+            )
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (marker.lastrowid,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                get_tag(connection, target_id),
+                Tag(id=target_id, name="Shoulder"),
+            )
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
 
     def test_cli_creates_no_database_export_or_backup_artifacts(self) -> None:
         self.populate_search_records()

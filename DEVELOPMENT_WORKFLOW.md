@@ -156,17 +156,15 @@ Includes:
 
 Status: in progress
 
-Completed sub-step:
+Completed sub-steps:
 
 - Step 8A: CLI foundation, literature list, and search
   - Status: completed and pushed
   - Includes the interactive CLI foundation, literature list, and literature
     search
 
-Current sub-step:
-
 - Step 8B-2: literature editing and deletion
-  - Status: in progress
+  - Status: completed and pushed
   - Step 8B-0: literature repository write validation and DOI/PMID
     normalization
     - Status: completed and pushed
@@ -181,7 +179,25 @@ Current sub-step:
       record display, input and transaction safety, and repository-backed
       validation and normalization
   - Step 8B-2B: literature deletion
+    - Status: completed and pushed
+    - Includes interactive literature deletion, complete current-record and
+      related-count display, two-step confirmation, cascade-impact warnings,
+      and input and transaction safety
+
+Current sub-step:
+
+- Step 8C: tag and usage-history management
+  - Status: in progress
+  - Step 8C-1A: tag listing, creation, and renaming
     - Status: current sub-step, in progress
+  - Step 8C-1B
+    - Status: not started
+  - Step 8C-2
+    - Status: not started
+  - Step 8C-3A
+    - Status: not started
+  - Step 8C-3B
+    - Status: not started
 
 Planned scope:
 
