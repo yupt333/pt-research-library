@@ -20,16 +20,19 @@ from src.repository import (
     create_usage_history,
     delete_literature,
     delete_tag,
+    delete_usage_history,
     detach_tag_from_literature,
     get_literature,
     get_literature_related_counts,
     get_tag,
+    get_usage_history,
     list_literature,
     list_tags,
     list_tags_for_literature,
     list_usage_history_for_literature,
     rename_tag,
     update_literature,
+    update_usage_history,
 )
 from src.search import search_literature
 
@@ -354,6 +357,50 @@ class CliTestCase(unittest.TestCase):
             final_menu_choice,
         ]
 
+    @staticmethod
+    def usage_history_edit_actions(
+        usage_history_id: int | str,
+        field_number: int | str,
+        new_value: str,
+        *,
+        confirmation: str = "1",
+        final_submenu_choice: str = "0",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "7",
+            "3",
+            str(usage_history_id),
+            str(field_number),
+            new_value,
+            confirmation,
+            final_submenu_choice,
+            final_menu_choice,
+        ]
+
+    @staticmethod
+    def usage_history_delete_actions(
+        usage_history_id: int | str,
+        *,
+        confirmation: str = "1",
+        confirmed_id: str | None = None,
+        final_submenu_choice: str = "0",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "7",
+            "4",
+            str(usage_history_id),
+            confirmation,
+            (
+                str(usage_history_id)
+                if confirmed_id is None
+                else confirmed_id
+            ),
+            final_submenu_choice,
+            final_menu_choice,
+        ]
+
     def add_record(self, title: str, **values: object) -> int:
         return add_literature(
             self.connection,
@@ -566,6 +613,67 @@ class CliTestCase(unittest.TestCase):
         connection.rollback_calls = 0
         connection.close_calls = 0
         return connection, literature_id, target_tag_id, other_tag_id
+
+    def create_tracking_usage_history_fixture(
+        self,
+        suffix: str,
+    ) -> tuple[TrackingConnection, int, int, int, int, int]:
+        database_path = self.directory / f"usage-history-{suffix}.db"
+        initialize_database(database_path)
+        connection = sqlite3.connect(
+            database_path,
+            factory=TrackingConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(
+            connection,
+            "PRAGMA foreign_keys = ON",
+        )
+        literature_id = add_literature(
+            connection,
+            Literature(title=f"Usage-history {suffix} target"),
+        )
+        other_literature_id = add_literature(
+            connection,
+            Literature(title=f"Usage-history {suffix} other"),
+        )
+        target_id = create_usage_history(
+            connection,
+            literature_id,
+            "target",
+            "Before project",
+            "Kept note",
+            "2026-08-01",
+        )
+        same_literature_id = create_usage_history(
+            connection,
+            literature_id,
+            "kept same",
+        )
+        other_history_id = create_usage_history(
+            connection,
+            other_literature_id,
+            "kept other",
+        )
+        target_tag_id = create_tag(connection, f"usage-{suffix}-target-tag")
+        other_tag_id = create_tag(connection, f"usage-{suffix}-other-tag")
+        attach_tag_to_literature(connection, literature_id, target_tag_id)
+        attach_tag_to_literature(
+            connection,
+            other_literature_id,
+            other_tag_id,
+        )
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        return (
+            connection,
+            literature_id,
+            target_id,
+            same_literature_id,
+            other_history_id,
+            target_tag_id,
+        )
 
     @staticmethod
     def schema_snapshot_for(
@@ -10477,11 +10585,13 @@ class CliTestCase(unittest.TestCase):
             [
                 "8",
                 "7",
-                "3",
+                "5",
                 "invalid",
                 *(["9"] * invalid_count),
                 "1",
                 "2",
+                "3",
+                "4",
                 "0",
                 "0",
             ]
@@ -10499,6 +10609,16 @@ class CliTestCase(unittest.TestCase):
                 "_run_usage_history_create",
                 return_value=False,
             ) as create_flow,
+            patch.object(
+                cli_module,
+                "_run_usage_history_edit",
+                return_value=False,
+            ) as edit_flow,
+            patch.object(
+                cli_module,
+                "_run_usage_history_delete",
+                return_value=False,
+            ) as delete_flow,
         ):
             result = run_cli(
                 self.connection,
@@ -10512,8 +10632,10 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 1)
         self.assertIn("1. 文献別使用履歴一覧", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
         self.assertIn("2. 使用履歴登録", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
+        self.assertIn("3. 使用履歴編集", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
+        self.assertIn("4. 使用履歴削除", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
         self.assertIn("0. メインメニューに戻る", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
-        self.assertNotIn("3. メインメニューに戻る", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
+        self.assertNotIn("5. メインメニューに戻る", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
         self.assertEqual(
             outputs.count(cli_module._INVALID_USAGE_HISTORY_MENU_MESSAGE),
             invalid_count + 2,
@@ -10524,6 +10646,16 @@ class CliTestCase(unittest.TestCase):
             outputs.append,
         )
         create_flow.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+        )
+        edit_flow.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+        )
+        delete_flow.assert_called_once_with(
             self.connection,
             feeder,
             outputs.append,
@@ -11428,6 +11560,1090 @@ class CliTestCase(unittest.TestCase):
 
                     self.assertIs(raised.exception, expected)
                     created.assert_not_called()
+                    self.assertEqual(self.table_snapshot(), before)
+                    self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
+    def test_usage_history_edit_each_field_preserves_all_other_data(self) -> None:
+        cases = (
+            (1, "usage_type", "  学会発表  ", "学会発表", 2),
+            (2, "project_name", "  Updated project  ", "  Updated project  ", 3),
+            (3, "usage_note", "\tUpdated note \n", "\tUpdated note \n", 4),
+            (4, "used_at", "2026-08-17", "2026-08-17", 5),
+        )
+        self.connection.execute("PRAGMA user_version = 201")
+
+        for field_number, field_name, raw_value, stored_value, column_index in cases:
+            with self.subTest(field=field_name):
+                literature_id = self.add_record(f"Usage edit target {field_name}")
+                other_literature_id = self.add_record(
+                    f"Usage edit other {field_name}"
+                )
+                tag_id = create_tag(self.connection, f"usage-edit-{field_name}")
+                attach_tag_to_literature(
+                    self.connection,
+                    literature_id,
+                    tag_id,
+                )
+                history_id = create_usage_history(
+                    self.connection,
+                    literature_id,
+                    "note",
+                    "Original project",
+                    "Original note",
+                    "2026-08-01",
+                )
+                create_usage_history(
+                    self.connection,
+                    literature_id,
+                    "same-literature history",
+                )
+                create_usage_history(
+                    self.connection,
+                    other_literature_id,
+                    "other-literature history",
+                )
+                before = self.table_snapshot()
+                schema_before = self.schema_snapshot()
+                schema_version_before = self.connection.execute(
+                    "PRAGMA schema_version"
+                ).fetchone()[0]
+                user_version_before = self.connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0]
+
+                with patch.object(
+                    cli_module,
+                    "update_usage_history",
+                    wraps=update_usage_history,
+                ) as updated:
+                    _, _, outputs = self.run_with_actions(
+                        self.usage_history_edit_actions(
+                            f"  000{history_id}\t",
+                            field_number,
+                            raw_value,
+                        )
+                    )
+
+                updated.assert_called_once_with(
+                    self.connection,
+                    history_id,
+                    {field_name: raw_value},
+                )
+                after = self.table_snapshot()
+                self.assertEqual(after["literature"], before["literature"])
+                self.assertEqual(after["tags"], before["tags"])
+                self.assertEqual(
+                    after["literature_tags"],
+                    before["literature_tags"],
+                )
+                expected_history = list(before["usage_history"])
+                target_index = next(
+                    index
+                    for index, row in enumerate(expected_history)
+                    if row[0] == history_id
+                )
+                expected_row = list(expected_history[target_index])
+                expected_row[column_index] = stored_value
+                expected_history[target_index] = tuple(expected_row)
+                self.assertEqual(after["usage_history"], expected_history)
+                stored = get_usage_history(self.connection, history_id)
+                self.assertIsNotNone(stored)
+                assert stored is not None
+                self.assertEqual(stored.literature_id, literature_id)
+                self.assertEqual(stored.created_at, before["usage_history"][target_index][6])
+                self.assertEqual(self.schema_snapshot(), schema_before)
+                self.assertEqual(
+                    self.connection.execute("PRAGMA schema_version").fetchone()[0],
+                    schema_version_before,
+                )
+                self.assertEqual(
+                    self.connection.execute("PRAGMA user_version").fetchone()[0],
+                    user_version_before,
+                )
+                displayed = "\n".join(outputs)
+                for label in (
+                    "id",
+                    "literature_id",
+                    "usage_type",
+                    "project_name",
+                    "usage_note",
+                    "used_at",
+                    "created_at",
+                ):
+                    self.assertIn(f"{label}:", displayed)
+                self.assertIn(f"使用履歴ID: {history_id}", outputs)
+                self.assertIn(f"編集項目: {field_name}", outputs)
+                self.assertIn("使用履歴を更新しました。", outputs)
+                self.assertIn(f"更新項目: {field_name}", outputs)
+                self.assertFalse(self.connection.in_transaction)
+
+        for forbidden in ("id", "literature_id", "created_at"):
+            self.assertNotIn(
+                forbidden,
+                cli_module._USAGE_HISTORY_EDIT_FIELD_MENU,
+            )
+
+    def test_usage_history_edit_optional_blank_validation_and_cancel(self) -> None:
+        literature_id = self.add_record("Usage edit validation")
+        history_id = create_usage_history(
+            self.connection,
+            literature_id,
+            "note",
+            "Project",
+            "Note",
+            "2026-08-01",
+        )
+
+        for field_number, field_name in (
+            (2, "project_name"),
+            (3, "usage_note"),
+            (4, "used_at"),
+        ):
+            with self.subTest(blank_optional=field_name):
+                with patch.object(
+                    cli_module,
+                    "update_usage_history",
+                    wraps=update_usage_history,
+                ) as updated:
+                    _, _, outputs = self.run_with_actions(
+                        self.usage_history_edit_actions(
+                            history_id,
+                            field_number,
+                            " \t\n ",
+                        )
+                    )
+
+                updated.assert_called_once_with(
+                    self.connection,
+                    history_id,
+                    {field_name: None},
+                )
+                stored = get_usage_history(self.connection, history_id)
+                self.assertIsNotNone(stored)
+                assert stored is not None
+                self.assertIsNone(getattr(stored, field_name))
+                self.assertIn("変更後: 未登録", outputs)
+
+        before = self.table_snapshot()
+        with patch.object(cli_module, "update_usage_history") as updated:
+            _, _, outputs = self.run_with_actions(
+                self.usage_history_edit_actions(history_id, 1, " \t ")
+            )
+        updated.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertIn("入力エラー: usage_typeは必須です。", outputs)
+
+        raw_invalid_date = "2025-02-29"
+        with patch.object(
+            cli_module,
+            "update_usage_history",
+            wraps=update_usage_history,
+        ) as updated:
+            _, _, outputs = self.run_with_actions(
+                self.usage_history_edit_actions(
+                    history_id,
+                    4,
+                    raw_invalid_date,
+                )
+            )
+        updated.assert_called_once_with(
+            self.connection,
+            history_id,
+            {"used_at": raw_invalid_date},
+        )
+        self.assertTrue(
+            any(item.startswith("使用履歴編集エラー: ") for item in outputs)
+        )
+        self.assertEqual(self.table_snapshot(), before)
+
+        cancel_cases = (
+            (
+                "field selection",
+                ["7", "3", str(history_id), "0", "5", "0", "0"],
+                cli_module._INVALID_USAGE_HISTORY_EDIT_FIELD_MESSAGE,
+            ),
+            (
+                "confirmation",
+                [
+                    "7",
+                    "3",
+                    str(history_id),
+                    "2",
+                    "new project",
+                    "2",
+                    "invalid",
+                    "0",
+                    "0",
+                    "0",
+                ],
+                cli_module._INVALID_CONFIRMATION_MESSAGE,
+            ),
+        )
+        for case, actions, expected_message in cancel_cases:
+            with self.subTest(cancel=case):
+                before_cancel = self.table_snapshot()
+                with patch.object(cli_module, "update_usage_history") as updated:
+                    _, _, outputs = self.run_with_actions(actions)
+                updated.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before_cancel)
+                self.assertIn(expected_message, outputs)
+                self.assertTrue(
+                    any("使用履歴" in item and "中止しました。" in item for item in outputs)
+                )
+
+    def test_usage_history_edit_delete_id_validation_missing_and_races(self) -> None:
+        invalid_values = (
+            "",
+            "0",
+            "+1",
+            "-1",
+            "1.5",
+            "1e3",
+            "１",
+            "١",
+            "history",
+        )
+        for operation in ("3", "4"):
+            for invalid_value in invalid_values:
+                with self.subTest(operation=operation, value=invalid_value):
+                    before = self.table_snapshot()
+                    with (
+                        patch.object(cli_module, "get_usage_history") as gotten,
+                        patch.object(cli_module, "update_usage_history") as updated,
+                        patch.object(cli_module, "delete_usage_history") as deleted,
+                    ):
+                        _, _, outputs = self.run_with_actions(
+                            ["7", operation, invalid_value, "0", "0"]
+                        )
+                    gotten.assert_not_called()
+                    updated.assert_not_called()
+                    deleted.assert_not_called()
+                    self.assertEqual(self.table_snapshot(), before)
+                    self.assertTrue(
+                        any(
+                            item.startswith("入力エラー: ") and "ASCII" in item
+                            for item in outputs
+                        )
+                    )
+
+        for operation in ("3", "4"):
+            with self.subTest(operation=operation, target="missing"):
+                with (
+                    patch.object(
+                        cli_module,
+                        "get_usage_history",
+                        return_value=None,
+                    ) as gotten,
+                    patch.object(cli_module, "update_usage_history") as updated,
+                    patch.object(cli_module, "delete_usage_history") as deleted,
+                ):
+                    _, _, outputs = self.run_with_actions(
+                        ["7", operation, "999999", "0", "0"]
+                    )
+                gotten.assert_called_once_with(self.connection, 999999)
+                updated.assert_not_called()
+                deleted.assert_not_called()
+                self.assertIn("対象の使用履歴が見つかりません。", outputs)
+
+        literature_id = self.add_record("Usage race target")
+        history_id = create_usage_history(self.connection, literature_id, "note")
+        for operation, actions, api_name in (
+            (
+                "edit",
+                self.usage_history_edit_actions(history_id, 2, "new"),
+                "update_usage_history",
+            ),
+            (
+                "delete",
+                self.usage_history_delete_actions(history_id),
+                "delete_usage_history",
+            ),
+        ):
+            with self.subTest(race=operation):
+                before = self.table_snapshot()
+                with patch.object(cli_module, api_name, return_value=False) as api:
+                    _, _, outputs = self.run_with_actions(actions)
+                api.assert_called_once()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertIn(
+                    "確認後に対象の使用履歴が存在しなくなりました。",
+                    outputs,
+                )
+                self.assertNotIn("使用履歴を更新しました。", outputs)
+                self.assertNotIn("使用履歴を削除しました。", outputs)
+
+    def test_usage_history_delete_two_step_confirmation_and_isolation(self) -> None:
+        literature_id = self.add_record("Usage delete target literature")
+        other_literature_id = self.add_record("Usage delete other literature")
+        target_id = create_usage_history(
+            self.connection,
+            literature_id,
+            "target",
+            "Target project",
+            "Target note",
+            "2026-08-17",
+        )
+        same_literature_id = create_usage_history(
+            self.connection,
+            literature_id,
+            "same literature",
+        )
+        other_history_id = create_usage_history(
+            self.connection,
+            other_literature_id,
+            "other literature",
+        )
+        tag_id = create_tag(self.connection, "usage-delete-tag")
+        attach_tag_to_literature(self.connection, literature_id, tag_id)
+        self.connection.execute("PRAGMA user_version = 202")
+        before = self.table_snapshot()
+        schema_before = self.schema_snapshot()
+        schema_version_before = self.connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = self.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+        actions = [
+            "7",
+            "4",
+            f"  000{target_id} ",
+            "2",
+            "invalid",
+            "1",
+            str(same_literature_id),
+            "+1",
+            f"000{target_id}",
+            "0",
+            "0",
+        ]
+
+        with patch.object(
+            cli_module,
+            "delete_usage_history",
+            wraps=delete_usage_history,
+        ) as deleted:
+            _, feeder, outputs = self.run_with_actions(actions)
+
+        deleted.assert_called_once_with(self.connection, target_id)
+        after = self.table_snapshot()
+        self.assertEqual(after["literature"], before["literature"])
+        self.assertEqual(after["tags"], before["tags"])
+        self.assertEqual(after["literature_tags"], before["literature_tags"])
+        self.assertEqual(
+            after["usage_history"],
+            [row for row in before["usage_history"] if row[0] != target_id],
+        )
+        self.assertIsNone(get_usage_history(self.connection, target_id))
+        self.assertIsNotNone(
+            get_usage_history(self.connection, same_literature_id)
+        )
+        self.assertIsNotNone(get_usage_history(self.connection, other_history_id))
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA schema_version").fetchone()[0],
+            schema_version_before,
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            user_version_before,
+        )
+        self.assertFalse(self.connection.in_transaction)
+        displayed = "\n".join(outputs)
+        for label in (
+            "id",
+            "literature_id",
+            "usage_type",
+            "project_name",
+            "usage_note",
+            "used_at",
+            "created_at",
+        ):
+            self.assertIn(f"{label}:", displayed)
+        for warning in (
+            "警告: この使用履歴レコード自体が削除されます。",
+            "対象文献は削除されません。",
+            "タグは削除されません。",
+            "文献とタグの関連付けは変更されません。",
+            "他の使用履歴は削除されません。",
+            "CLIには自動復元機能がありません。",
+        ):
+            self.assertIn(warning, outputs)
+        self.assertGreaterEqual(
+            outputs.count(cli_module._INVALID_CONFIRMATION_MESSAGE),
+            2,
+        )
+        final_prompt = next(
+            prompt
+            for prompt in feeder.prompts
+            if prompt.startswith("削除を確定するため使用履歴ID")
+        )
+        self.assertIn(f"使用履歴ID {target_id}", final_prompt)
+        self.assertIn("（0で中止）", final_prompt)
+        self.assertIn("使用履歴を削除しました。", outputs)
+        self.assertIn(f"使用履歴ID: {target_id}", outputs)
+
+    def test_usage_history_delete_cancellation_never_calls_api(self) -> None:
+        literature_id = self.add_record("Usage delete cancellation")
+        history_id = create_usage_history(self.connection, literature_id, "note")
+        cases = (
+            (
+                "first confirmation",
+                ["7", "4", str(history_id), "2", "0", "0", "0"],
+            ),
+            (
+                "second confirmation",
+                ["7", "4", str(history_id), "1", "0", "0", "0"],
+            ),
+        )
+        for case, actions in cases:
+            with self.subTest(case=case):
+                before = self.table_snapshot()
+                with patch.object(cli_module, "delete_usage_history") as deleted:
+                    _, _, outputs = self.run_with_actions(actions)
+                deleted.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertIn("使用履歴削除を中止しました。", outputs)
+                self.assertNotIn("使用履歴を削除しました。", outputs)
+
+    def test_usage_history_edit_delete_reject_initial_and_late_transactions(
+        self,
+    ) -> None:
+        for operation, menu_choice, api_name, active_message in (
+            (
+                "edit",
+                "3",
+                "update_usage_history",
+                cli_module._USAGE_HISTORY_EDIT_ACTIVE_TRANSACTION_MESSAGE,
+            ),
+            (
+                "delete",
+                "4",
+                "delete_usage_history",
+                cli_module._USAGE_HISTORY_DELETE_ACTIVE_TRANSACTION_MESSAGE,
+            ),
+        ):
+            with self.subTest(operation=operation, timing="initial"):
+                connection, _, history_id, _, _, _ = (
+                    self.create_tracking_usage_history_fixture(
+                        f"{operation}-initial"
+                    )
+                )
+                marker = connection.execute(
+                    "INSERT INTO tags (name) VALUES (?)",
+                    (f"pending-usage-{operation}-initial",),
+                )
+                connection.commit_calls = 0
+                connection.rollback_calls = 0
+                connection.close_calls = 0
+                try:
+                    with patch.object(cli_module, api_name) as write_api:
+                        _, _, outputs = self.run_with_actions(
+                            ["7", menu_choice, "0", "0"],
+                            connection=connection,
+                        )
+
+                    write_api.assert_not_called()
+                    self.assertIn(active_message, outputs)
+                    self.assertTrue(connection.in_transaction)
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM tags WHERE id = ?",
+                            (marker.lastrowid,),
+                        ).fetchone()[0],
+                        1,
+                    )
+                    self.assertIsNotNone(get_usage_history(connection, history_id))
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                finally:
+                    if connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
+
+            with self.subTest(operation=operation, timing="late"):
+                connection, _, history_id, _, _, _ = (
+                    self.create_tracking_usage_history_fixture(
+                        f"{operation}-late"
+                    )
+                )
+                actions = (
+                    self.usage_history_edit_actions(history_id, 2, "after")
+                    if operation == "edit"
+                    else self.usage_history_delete_actions(history_id)
+                )
+                mutation_prompt_number = 6 if operation == "edit" else 5
+                feeder = InputFeeder(actions)
+                marker_ids: list[int] = []
+
+                def input_func(prompt: str) -> str:
+                    value = feeder(prompt)
+                    if len(feeder.prompts) == mutation_prompt_number:
+                        marker = connection.execute(
+                            "INSERT INTO tags (name) VALUES (?)",
+                            (f"pending-usage-{operation}-late",),
+                        )
+                        assert marker.lastrowid is not None
+                        marker_ids.append(marker.lastrowid)
+                    return value
+
+                connection.commit_calls = 0
+                connection.rollback_calls = 0
+                connection.close_calls = 0
+                outputs: list[str] = []
+                try:
+                    with patch.object(cli_module, api_name) as write_api:
+                        result = run_cli(
+                            connection,
+                            input_func=input_func,
+                            output_func=outputs.append,
+                        )
+
+                    self.assertIsNone(result)
+                    write_api.assert_not_called()
+                    self.assertEqual(len(marker_ids), 1)
+                    self.assertIn(active_message, outputs)
+                    self.assertTrue(connection.in_transaction)
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM tags WHERE id = ?",
+                            (marker_ids[0],),
+                        ).fetchone()[0],
+                        1,
+                    )
+                    stored = get_usage_history(connection, history_id)
+                    self.assertIsNotNone(stored)
+                    assert stored is not None
+                    self.assertEqual(stored.project_name, "Before project")
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                finally:
+                    if connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
+
+    def test_usage_history_edit_delete_repository_exception_boundaries(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Usage edit/delete API errors")
+        history_id = create_usage_history(self.connection, literature_id, "note")
+
+        for operation in ("edit", "delete"):
+            menu_choice = "3" if operation == "edit" else "4"
+            for expected in (
+                sqlite3.OperationalError(f"{operation} get sqlite"),
+                RuntimeError(f"{operation} get runtime"),
+            ):
+                with self.subTest(
+                    operation=operation,
+                    api="get",
+                    exception=type(expected).__name__,
+                ):
+                    before = self.table_snapshot()
+                    outputs: list[str] = []
+                    with patch.object(
+                        cli_module,
+                        "get_usage_history",
+                        side_effect=expected,
+                    ) as gotten:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(
+                                    ["7", menu_choice, str(history_id)]
+                                ),
+                                output_func=outputs.append,
+                            )
+                    self.assertIs(raised.exception, expected)
+                    gotten.assert_called_once_with(self.connection, history_id)
+                    self.assertEqual(self.table_snapshot(), before)
+                    if isinstance(expected, sqlite3.Error):
+                        self.assertEqual(
+                            outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                            1,
+                        )
+                    else:
+                        self.assertNotIn(
+                            cli_module._DATABASE_ERROR_MESSAGE,
+                            outputs,
+                        )
+
+        for expected in (
+            ValueError("edit value"),
+            sqlite3.OperationalError("edit sqlite"),
+            RuntimeError("edit runtime"),
+            EOFError("edit API EOF"),
+            KeyboardInterrupt(),
+        ):
+            with self.subTest(api="update", exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+                actions: list[object] = self.usage_history_edit_actions(
+                    history_id,
+                    2,
+                    "updated",
+                )
+                if not isinstance(expected, ValueError):
+                    actions = actions[:-2]
+                with patch.object(
+                    cli_module,
+                    "update_usage_history",
+                    side_effect=expected,
+                ) as updated:
+                    if isinstance(expected, ValueError):
+                        result = run_cli(
+                            self.connection,
+                            input_func=InputFeeder(actions),
+                            output_func=outputs.append,
+                        )
+                        self.assertIsNone(result)
+                        self.assertTrue(
+                            any(
+                                item.startswith("使用履歴編集エラー: ")
+                                for item in outputs
+                            )
+                        )
+                    else:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+                        self.assertIs(raised.exception, expected)
+                updated.assert_called_once_with(
+                    self.connection,
+                    history_id,
+                    {"project_name": "updated"},
+                )
+                self.assertEqual(self.table_snapshot(), before)
+                if isinstance(expected, sqlite3.Error):
+                    self.assertEqual(
+                        outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                        1,
+                    )
+                elif not isinstance(expected, ValueError):
+                    self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
+        for expected in (
+            sqlite3.OperationalError("delete sqlite"),
+            RuntimeError("delete runtime"),
+            EOFError("delete API EOF"),
+            KeyboardInterrupt(),
+        ):
+            with self.subTest(api="delete", exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+                with patch.object(
+                    cli_module,
+                    "delete_usage_history",
+                    side_effect=expected,
+                ) as deleted:
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(
+                                self.usage_history_delete_actions(history_id)[:-2]
+                            ),
+                            output_func=outputs.append,
+                        )
+                self.assertIs(raised.exception, expected)
+                deleted.assert_called_once_with(self.connection, history_id)
+                self.assertEqual(self.table_snapshot(), before)
+                if isinstance(expected, sqlite3.Error):
+                    self.assertEqual(
+                        outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                        1,
+                    )
+                else:
+                    self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
+    def test_usage_history_edit_delete_input_exception_matrix(self) -> None:
+        literature_id = self.add_record("Usage edit/delete input exceptions")
+        history_id = create_usage_history(self.connection, literature_id, "note")
+        prefixes: tuple[tuple[str, list[object]], ...] = (
+            ("edit ID", ["7", "3"]),
+            ("edit field", ["7", "3", str(history_id)]),
+            ("edit value", ["7", "3", str(history_id), "1"]),
+            (
+                "edit confirmation",
+                ["7", "3", str(history_id), "1", "new usage"],
+            ),
+            ("delete ID", ["7", "4"]),
+            ("delete confirmation", ["7", "4", str(history_id)]),
+            (
+                "delete repeated ID",
+                ["7", "4", str(history_id), "1"],
+            ),
+        )
+        exception_factories = (
+            ("EOFError", lambda stage: EOFError(stage)),
+            ("KeyboardInterrupt", lambda stage: KeyboardInterrupt()),
+            ("RuntimeError", lambda stage: RuntimeError(stage)),
+            (
+                "sqlite3.Error",
+                lambda stage: sqlite3.OperationalError(stage),
+            ),
+        )
+        for stage, prefix in prefixes:
+            for exception_name, exception_factory in exception_factories:
+                with self.subTest(stage=stage, exception=exception_name):
+                    expected = exception_factory(stage)
+                    before = self.table_snapshot()
+                    outputs: list[str] = []
+                    feeder = InputFeeder([*prefix, expected])
+                    if isinstance(expected, (EOFError, KeyboardInterrupt)):
+                        result = run_cli(
+                            self.connection,
+                            input_func=feeder,
+                            output_func=outputs.append,
+                        )
+                        self.assertIsNone(result)
+                        self.assertEqual(
+                            outputs.count(cli_module._EXIT_MESSAGE),
+                            1,
+                        )
+                    else:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=feeder,
+                                output_func=outputs.append,
+                            )
+                        self.assertIs(raised.exception, expected)
+                        self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+                    if isinstance(expected, sqlite3.Error):
+                        self.assertNotIn(
+                            cli_module._DATABASE_ERROR_MESSAGE,
+                            outputs,
+                        )
+                    self.assertEqual(self.table_snapshot(), before)
+
+    def test_real_sqlite_usage_history_edit_delete_failures_are_atomic(
+        self,
+    ) -> None:
+        for operation in ("edit", "delete"):
+            with self.subTest(operation=operation):
+                connection, _, target_id, _, _, _ = (
+                    self.create_tracking_usage_history_fixture(
+                        f"{operation}-failure"
+                    )
+                )
+                connection.execute(
+                    f"PRAGMA user_version = {211 if operation == 'edit' else 212}"
+                )
+                sql_operation = "UPDATE" if operation == "edit" else "DELETE"
+                connection.execute(
+                    f"""
+                    CREATE TRIGGER force_cli_usage_{operation}_failure
+                    BEFORE {sql_operation} ON usage_history
+                    BEGIN
+                        SELECT RAISE(ABORT, 'forced CLI usage {operation} failure');
+                    END
+                    """
+                )
+                connection.commit()
+                before = self.table_snapshot_for(connection)
+                schema_before = self.schema_snapshot_for(connection)
+                schema_version_before = connection.execute(
+                    "PRAGMA schema_version"
+                ).fetchone()[0]
+                user_version_before = connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0]
+                connection.commit_calls = 0
+                connection.rollback_calls = 0
+                connection.close_calls = 0
+                captured: list[sqlite3.Error] = []
+
+                def failing_write(*args: object) -> bool:
+                    try:
+                        if operation == "edit":
+                            return update_usage_history(  # type: ignore[arg-type]
+                                *args
+                            )
+                        return delete_usage_history(*args)  # type: ignore[arg-type]
+                    except sqlite3.Error as error:
+                        captured.append(error)
+                        raise
+
+                api_name = (
+                    "update_usage_history"
+                    if operation == "edit"
+                    else "delete_usage_history"
+                )
+                actions = (
+                    self.usage_history_edit_actions(
+                        target_id,
+                        2,
+                        "Must roll back",
+                    )[:-2]
+                    if operation == "edit"
+                    else self.usage_history_delete_actions(target_id)[:-2]
+                )
+                outputs: list[str] = []
+                try:
+                    with patch.object(
+                        cli_module,
+                        api_name,
+                        side_effect=failing_write,
+                    ) as write_api:
+                        with self.assertRaises(sqlite3.IntegrityError) as raised:
+                            run_cli(
+                                connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+
+                    write_api.assert_called_once()
+                    if operation == "edit":
+                        write_api.assert_called_once_with(
+                            connection,
+                            target_id,
+                            {"project_name": "Must roll back"},
+                        )
+                    else:
+                        write_api.assert_called_once_with(connection, target_id)
+                    self.assertEqual(len(captured), 1)
+                    self.assertIs(raised.exception, captured[0])
+                    self.assertEqual(
+                        self.table_snapshot_for(connection),
+                        before,
+                    )
+                    self.assertEqual(
+                        self.schema_snapshot_for(connection),
+                        schema_before,
+                    )
+                    self.assertEqual(
+                        connection.execute("PRAGMA schema_version").fetchone()[0],
+                        schema_version_before,
+                    )
+                    self.assertEqual(
+                        connection.execute("PRAGMA user_version").fetchone()[0],
+                        user_version_before,
+                    )
+                    self.assertFalse(connection.in_transaction)
+                    self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+                    self.assertIsNotNone(get_usage_history(connection, target_id))
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                    self.assertEqual(
+                        outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                        1,
+                    )
+                    self.assertNotIn("使用履歴を更新しました。", outputs)
+                    self.assertNotIn("使用履歴を削除しました。", outputs)
+                finally:
+                    if connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
+
+    def test_usage_history_edit_delete_success_output_failure_keeps_commit(
+        self,
+    ) -> None:
+        for operation in ("edit", "delete"):
+            with self.subTest(operation=operation):
+                connection, _, target_id, _, _, _ = (
+                    self.create_tracking_usage_history_fixture(
+                        f"{operation}-output"
+                    )
+                )
+                connection.execute(
+                    f"PRAGMA user_version = {221 if operation == 'edit' else 222}"
+                )
+                before = self.table_snapshot_for(connection)
+                schema_before = self.schema_snapshot_for(connection)
+                schema_version_before = connection.execute(
+                    "PRAGMA schema_version"
+                ).fetchone()[0]
+                user_version_before = connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0]
+                connection.commit_calls = 0
+                connection.rollback_calls = 0
+                connection.close_calls = 0
+                success_message = (
+                    "使用履歴を更新しました。"
+                    if operation == "edit"
+                    else "使用履歴を削除しました。"
+                )
+                expected = RuntimeError(f"usage {operation} success output failure")
+                outputs: list[str] = []
+
+                def output_func(message: str) -> None:
+                    outputs.append(message)
+                    if message == success_message:
+                        raise expected
+
+                api_name = (
+                    "update_usage_history"
+                    if operation == "edit"
+                    else "delete_usage_history"
+                )
+                wrapped_api = (
+                    update_usage_history
+                    if operation == "edit"
+                    else delete_usage_history
+                )
+                actions = (
+                    self.usage_history_edit_actions(
+                        target_id,
+                        2,
+                        "After project",
+                    )[:-2]
+                    if operation == "edit"
+                    else self.usage_history_delete_actions(target_id)[:-2]
+                )
+                try:
+                    with patch.object(
+                        cli_module,
+                        api_name,
+                        wraps=wrapped_api,
+                    ) as write_api:
+                        with self.assertRaises(RuntimeError) as raised:
+                            run_cli(
+                                connection,
+                                input_func=InputFeeder(actions),
+                                output_func=output_func,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    write_api.assert_called_once()
+                    after = self.table_snapshot_for(connection)
+                    self.assertEqual(after["literature"], before["literature"])
+                    self.assertEqual(after["tags"], before["tags"])
+                    self.assertEqual(
+                        after["literature_tags"],
+                        before["literature_tags"],
+                    )
+                    if operation == "edit":
+                        write_api.assert_called_once_with(
+                            connection,
+                            target_id,
+                            {"project_name": "After project"},
+                        )
+                        expected_history = list(before["usage_history"])
+                        target_index = next(
+                            index
+                            for index, row in enumerate(expected_history)
+                            if row[0] == target_id
+                        )
+                        expected_row = list(expected_history[target_index])
+                        expected_row[3] = "After project"
+                        expected_history[target_index] = tuple(expected_row)
+                        self.assertEqual(
+                            after["usage_history"],
+                            expected_history,
+                        )
+                    else:
+                        write_api.assert_called_once_with(connection, target_id)
+                        self.assertEqual(
+                            after["usage_history"],
+                            [
+                                row
+                                for row in before["usage_history"]
+                                if row[0] != target_id
+                            ],
+                        )
+                    self.assertEqual(
+                        self.schema_snapshot_for(connection),
+                        schema_before,
+                    )
+                    self.assertEqual(
+                        connection.execute("PRAGMA schema_version").fetchone()[0],
+                        schema_version_before,
+                    )
+                    self.assertEqual(
+                        connection.execute("PRAGMA user_version").fetchone()[0],
+                        user_version_before,
+                    )
+                    self.assertFalse(connection.in_transaction)
+                    self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                    self.assertEqual(outputs.count(success_message), 1)
+                    self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+                finally:
+                    if connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
+
+    def test_usage_history_edit_delete_output_exceptions_before_write(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Usage edit/delete output errors")
+        history_id = create_usage_history(
+            self.connection,
+            literature_id,
+            "note",
+            "project",
+            "note",
+            "2026-08-17",
+        )
+        formatted_history = cli_module._format_usage_history(
+            get_usage_history(self.connection, history_id)
+        )
+        cases = (
+            (
+                "edit record",
+                ["7", "3", str(history_id)],
+                formatted_history,
+            ),
+            (
+                "edit confirmation",
+                ["7", "3", str(history_id), "2", "new project"],
+                cli_module._USAGE_HISTORY_EDIT_CONFIRMATION_MENU,
+            ),
+            (
+                "delete record",
+                ["7", "4", str(history_id)],
+                formatted_history,
+            ),
+            (
+                "delete warning",
+                ["7", "4", str(history_id)],
+                "削除対象と影響を確認してください。",
+            ),
+            (
+                "delete confirmation",
+                ["7", "4", str(history_id)],
+                cli_module._DELETE_CONFIRMATION_MENU,
+            ),
+        )
+        for case, actions, failing_message in cases:
+            for expected in (
+                RuntimeError(f"{case} output failure"),
+                sqlite3.OperationalError(f"{case} output sqlite failure"),
+                EOFError(f"{case} output EOF"),
+                KeyboardInterrupt(),
+            ):
+                with self.subTest(case=case, exception=type(expected).__name__):
+                    before = self.table_snapshot()
+                    outputs: list[str] = []
+
+                    def output_func(message: str) -> None:
+                        outputs.append(message)
+                        if message == failing_message:
+                            raise expected
+
+                    with (
+                        patch.object(cli_module, "update_usage_history") as updated,
+                        patch.object(cli_module, "delete_usage_history") as deleted,
+                    ):
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=output_func,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    updated.assert_not_called()
+                    deleted.assert_not_called()
                     self.assertEqual(self.table_snapshot(), before)
                     self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
 

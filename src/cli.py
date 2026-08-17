@@ -13,16 +13,19 @@ from src.repository import (
     create_usage_history,
     delete_literature,
     delete_tag,
+    delete_usage_history,
     detach_tag_from_literature,
     get_literature,
     get_literature_related_counts,
     get_tag,
+    get_usage_history,
     list_literature,
     list_tags,
     list_tags_for_literature,
     list_usage_history_for_literature,
     rename_tag,
     update_literature,
+    update_usage_history,
 )
 from src.search import search_literature
 
@@ -203,14 +206,44 @@ _USAGE_HISTORY_MANAGEMENT_MENU = """使用履歴管理
 
 1. 文献別使用履歴一覧
 2. 使用履歴登録
+3. 使用履歴編集
+4. 使用履歴削除
 0. メインメニューに戻る"""
 _INVALID_USAGE_HISTORY_MENU_MESSAGE = (
-    "入力エラー: 0、1、2のいずれかを選択してください。"
+    "入力エラー: 0、1、2、3、4のいずれかを選択してください。"
 )
 _USAGE_HISTORY_CREATE_CONFIRMATION_MENU = """1. この使用履歴を登録する
 0. 登録を中止する"""
 _USAGE_HISTORY_CREATE_ACTIVE_TRANSACTION_MESSAGE = (
     "アクティブなトランザクション中は使用履歴を登録できません。"
+)
+_USAGE_HISTORY_EDIT_FIELDS = (
+    "usage_type",
+    "project_name",
+    "usage_note",
+    "used_at",
+)
+_USAGE_HISTORY_EDIT_FIELD_MENU = """1. usage_type
+2. project_name
+3. usage_note
+4. used_at
+5. 編集中止"""
+_INVALID_USAGE_HISTORY_EDIT_FIELD_MESSAGE = (
+    "入力エラー: 1、2、3、4、5のいずれかを選択してください。"
+)
+_USAGE_HISTORY_EDIT_PROMPTS = {
+    "usage_type": "新しいusage_type（必須）: ",
+    "project_name": "新しいproject_name（空欄で未登録）: ",
+    "usage_note": "新しいusage_note（空欄で未登録）: ",
+    "used_at": "新しいused_at（YYYY-MM-DD、空欄で未登録）: ",
+}
+_USAGE_HISTORY_EDIT_CONFIRMATION_MENU = """1. この内容で更新する
+0. 更新を中止する"""
+_USAGE_HISTORY_EDIT_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中は使用履歴を編集できません。"
+)
+_USAGE_HISTORY_DELETE_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中は使用履歴を削除できません。"
 )
 _DUPLICATE_REASON_LABELS = {
     "doi": "DOI一致",
@@ -1566,6 +1599,236 @@ def _run_usage_history_create(
     return False
 
 
+def _run_usage_history_edit(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Collect and confirm one repository-backed usage-history update."""
+    if connection.in_transaction:
+        output_func(_USAGE_HISTORY_EDIT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        raw_usage_history_id = _read_input(
+            input_func,
+            "使用履歴ID（ASCII数字）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        usage_history_id = _required_positive_ascii_integer(
+            raw_usage_history_id,
+            "使用履歴ID",
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        usage_history = get_usage_history(connection, usage_history_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if usage_history is None:
+        output_func("対象の使用履歴が見つかりません。")
+        return False
+
+    output_func("現在の使用履歴情報:")
+    output_func(_format_usage_history(usage_history))
+    output_func(_USAGE_HISTORY_EDIT_FIELD_MENU)
+
+    while True:
+        try:
+            raw_field_choice = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        field_choice = raw_field_choice.strip()
+        if field_choice == "5":
+            output_func("使用履歴編集を中止しました。")
+            return False
+        if field_choice in {"1", "2", "3", "4"}:
+            break
+        output_func(_INVALID_USAGE_HISTORY_EDIT_FIELD_MESSAGE)
+
+    field_name = _USAGE_HISTORY_EDIT_FIELDS[int(field_choice) - 1]
+    try:
+        raw_new_value = _read_input(
+            input_func,
+            _USAGE_HISTORY_EDIT_PROMPTS[field_name],
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    if field_name == "usage_type":
+        if not raw_new_value.strip():
+            output_func("入力エラー: usage_typeは必須です。")
+            return False
+        new_value: object = raw_new_value
+    else:
+        new_value = _optional_unmodified_text(raw_new_value)
+
+    output_func("使用履歴の変更内容を確認してください。")
+    output_func(f"使用履歴ID: {usage_history_id}")
+    output_func(f"編集項目: {field_name}")
+    output_func(
+        f"変更前: {_display_value(getattr(usage_history, field_name))}"
+    )
+    output_func(f"変更後: {_display_value(new_value)}")
+    output_func(_USAGE_HISTORY_EDIT_CONFIRMATION_MENU)
+    while True:
+        try:
+            raw_confirmation = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = raw_confirmation.strip()
+        if confirmation == "0":
+            output_func("使用履歴更新を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    if connection.in_transaction:
+        output_func(_USAGE_HISTORY_EDIT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        updated = update_usage_history(
+            connection,
+            usage_history_id,
+            {field_name: new_value},
+        )
+    except ValueError as error:
+        output_func(f"使用履歴編集エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if not updated:
+        output_func("確認後に対象の使用履歴が存在しなくなりました。")
+        return False
+
+    output_func("使用履歴を更新しました。")
+    output_func(f"使用履歴ID: {usage_history_id}")
+    output_func(f"更新項目: {field_name}")
+    return False
+
+
+def _run_usage_history_delete(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Display impact and require two confirmations before deleting history."""
+    if connection.in_transaction:
+        output_func(_USAGE_HISTORY_DELETE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        raw_usage_history_id = _read_input(
+            input_func,
+            "使用履歴ID（ASCII数字）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        usage_history_id = _required_positive_ascii_integer(
+            raw_usage_history_id,
+            "使用履歴ID",
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        usage_history = get_usage_history(connection, usage_history_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if usage_history is None:
+        output_func("対象の使用履歴が見つかりません。")
+        return False
+
+    output_func("削除対象の使用履歴:")
+    output_func(_format_usage_history(usage_history))
+    output_func("削除対象と影響を確認してください。")
+    output_func("警告: この使用履歴レコード自体が削除されます。")
+    output_func("対象文献は削除されません。")
+    output_func("タグは削除されません。")
+    output_func("文献とタグの関連付けは変更されません。")
+    output_func("他の使用履歴は削除されません。")
+    output_func("CLIには自動復元機能がありません。")
+    output_func(_DELETE_CONFIRMATION_MENU)
+
+    while True:
+        try:
+            raw_confirmation = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = raw_confirmation.strip()
+        if confirmation == "0":
+            output_func("使用履歴削除を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    final_confirmation_prompt = (
+        f"削除を確定するため使用履歴ID {usage_history_id} "
+        "を再入力してください\n（0で中止）: "
+    )
+    invalid_final_confirmation_message = (
+        f"入力エラー: 使用履歴ID {usage_history_id} または0を入力してください。"
+    )
+    while True:
+        try:
+            raw_confirmed_id = _read_input(
+                input_func,
+                final_confirmation_prompt,
+            )
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmed_id_text = raw_confirmed_id.strip()
+        if confirmed_id_text == "0":
+            output_func("使用履歴削除を中止しました。")
+            return False
+        try:
+            confirmed_id = _required_positive_ascii_integer(
+                raw_confirmed_id,
+                "使用履歴ID",
+            )
+        except ValueError:
+            output_func(invalid_final_confirmation_message)
+            continue
+        if confirmed_id == usage_history_id:
+            break
+        output_func(invalid_final_confirmation_message)
+
+    if connection.in_transaction:
+        output_func(_USAGE_HISTORY_DELETE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        deleted = delete_usage_history(connection, usage_history_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if not deleted:
+        output_func("確認後に対象の使用履歴が存在しなくなりました。")
+        return False
+
+    output_func("使用履歴を削除しました。")
+    output_func(f"使用履歴ID: {usage_history_id}")
+    return False
+
+
 def _run_usage_history_management(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
@@ -1582,7 +1845,7 @@ def _run_usage_history_management(
 
         if choice == "0":
             return False
-        if choice not in {"1", "2"}:
+        if choice not in {"1", "2", "3", "4"}:
             output_func(_INVALID_USAGE_HISTORY_MENU_MESSAGE)
             continue
 
@@ -1593,6 +1856,18 @@ def _run_usage_history_management(
         ):
             return True
         if choice == "2" and _run_usage_history_create(
+            connection,
+            input_func,
+            output_func,
+        ):
+            return True
+        if choice == "3" and _run_usage_history_edit(
+            connection,
+            input_func,
+            output_func,
+        ):
+            return True
+        if choice == "4" and _run_usage_history_delete(
             connection,
             input_func,
             output_func,

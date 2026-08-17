@@ -201,9 +201,11 @@ Current sub-step:
     - Includes repository-backed literature tag listing, tag attachment, and
       tag detachment with input and transaction safety
   - Step 8C-3A
-    - Status: current sub-step, in progress
+    - Status: completed and pushed
+    - Includes repository-backed usage-history listing and creation with
+      input, confirmation, and transaction safety
   - Step 8C-3B
-    - Status: not started
+    - Status: current sub-step, in progress
 
 Planned scope:
 
