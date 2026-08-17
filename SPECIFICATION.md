@@ -94,6 +94,7 @@ Phase 1では、外部APIやAI連携を行わず、ローカル環境で安定�
 - PubMed API連携
 - Crossref API連携
 - DOIからの自動書誌取得
+- 書誌情報の自動取得
 - PDF本文解析
 - AIによる自動要約
 - 文献の手動統合
@@ -101,6 +102,7 @@ Phase 1では、外部APIやAI連携を行わず、ローカル環境で安定�
 - Webアプリ化
 - クラウド同期
 - 複数端末リアルタイム同期
+- 複数ユーザー対応
 
 これらはPhase 2以降で検討する。
 
@@ -212,6 +214,7 @@ Phase 1では、外部APIやAI連携を行わず、ローカル環境で安定�
 ### 7.2 Phase 1の管理方針
 
 - タグの追加、名称変更、削除を実装する。
+- 文献へのタグ付与と、文献からのタグ解除を実装する。
 - タグ名の前後の空白は除去して保存する。
 - 同一の英字タグは大文字と小文字を区別しない。
 - 文献別タグ一覧は、文献が存在しない場合は `None`、存在してタグが0件の場合は空リスト、タグがある場合はタグのリストを返す。
@@ -227,10 +230,10 @@ Phase 1では、外部APIやAI連携を行わず、ローカル環境で安定�
 | 項目 | 説明 |
 |---|---|
 | id | 使用履歴ID |
-| literature_id | 対象文献ID |
-| usage_type | note、大学院研究、学会発表、論文、研究計画等 |
-| project_name | 使用した研究・記事・発表名 |
-| usage_note | 使用箇所や目的 |
+| literature_id | 対象文献ID。必須 |
+| usage_type | note、大学院研究、学会発表、論文、研究計画等。空でない文字列を必須とする |
+| project_name | 使用した研究・記事・発表名。任意 |
+| usage_note | 使用箇所や目的。任意 |
 | used_at | 使用日。YYYY-MM-DD形式の任意項目 |
 | created_at | 登録日時。UTCのISO 8601形式で保存 |
 
@@ -251,9 +254,12 @@ Phase 1では、外部APIやAI連携を行わず、ローカル環境で安定�
 
 1. DOI完全一致
 2. PMID完全一致
-3. タイトル正規化後の完全一致
-4. タイトル類似度
-5. 著者名と出版年の組み合わせ
+3. 正規化タイトルに基づくタイトル比較
+4. タイトル類似度0.90以上
+
+3と4は、実装上は同じタイトル類似度判定として扱う。正規化タイトルが完全一致する場合は、タイトル類似度1.0としてこの判定に包含する。
+
+Phase 1では、著者名と出版年だけを条件とする自動重複候補判定は行わない。
 
 ### 9.2 DOI・PMIDの正規化
 
@@ -278,25 +284,19 @@ Phase 1では、外部APIやAI連携を行わず、ローカル環境で安定�
 - 重複候補と判定理由を利用者に提示する。
 - 利用者は「そのまま登録する」または「登録を中止する」を選択する。
 - 手動統合機能はPhase 1に含めない。
+- 重複かどうかの最終判断は利用者が行う。
 
 ---
 
 ## 10. 検索機能
 
-最低限、以下を検索対象とする。
+キーワード検索では、以下を対象とする。
 
-- タイトル
-- 著者
-- 雑誌名
-- DOI
-- PMID
-- 抄録
-- 自分の要約
-- 一般メモ
-- 主要な結果、方法の要点、臨床的解釈、限界などの研究用メモ
-- タグ
-- 研究との関連
-- 使用履歴
+- `literature` の文字列項目：タイトル、著者、雑誌名、巻、号、ページ、DOI、PMID、URL、言語、文献種別、抄録、PDFパス、自分の要約、手動入力したAI要約、各状態、一般メモ、主要な結果、方法の要点、臨床的解釈、限界、研究との関連、エビデンスレベル、除外理由、作成・更新日時
+- タグ名
+- 使用履歴の `usage_type`、`project_name`、`usage_note`
+
+検索はデータベースを変更せず、呼び出し元のトランザクションを確定または破棄しない。
 
 ### 10.1 Phase 1の絞り込み
 
@@ -340,7 +340,7 @@ macOSおよびExcelでの利用を考慮し、UTF-8 with BOMを使用する。
 - `literature_ids` の各IDは、1以上9223372036854775807以下の整数とする。
 - 範囲外のIDは、SQLiteへ渡す前に `ValueError` として拒否する。
 - コアCSV出力APIは、親ディレクトリが存在する明示的な出力ファイルパスを受け付ける。
-- 将来のPhase 1 CLIは、`exports/` を既定の出力先とする。
+- Phase 1 CLIは、プロジェクトルート内の `exports/` を既定の出力先とする。
 
 ### 11.5 SQLiteのバインド変数上限
 
@@ -362,7 +362,7 @@ macOSおよびExcelでの利用を考慮し、UTF-8 with BOMを使用する。
 ### 12.2 方針
 
 - コアAPIは、既存の明示的なバックアップディレクトリを受け付け、そのディレクトリを自動作成しない。
-- 将来のPhase 1 CLIは、プロジェクト内の `backups/` を既定の保存先とする。
+- Phase 1 CLIは、プロジェクトルート内の `backups/` を既定の保存先とする。
 - ファイル名はUTC日時とマイクロ秒を含む `pt_research_library_backup_YYYYMMDDTHHMMSSffffffZ.sqlite3` 形式とする。
 - 同名が存在する場合は `_1`、`_2` のような連番を付け、最大1000候補（連番なし、および `_1` から `_999`）まで試し、既存バックアップを上書きしない。1000候補すべてで `FileExistsError` となった場合は `FileExistsError` とする。
 - 同じ出力先ディレクトリの一時SQLiteファイルへバックアップし、`PRAGMA quick_check` の結果が正確に `ok` であることを確認してから最終ファイルとして確定する。
@@ -388,19 +388,23 @@ Phase 1では以下を基本構成とする。
 
 ```text
 pt-research-library/
+├── AGENTS.md
+├── DEVELOPMENT_WORKFLOW.md
 ├── README.md
 ├── SPECIFICATION.md
 ├── .gitignore
 ├── requirements.txt
 ├── src/
 │   ├── __init__.py
-│   ├── main.py
+│   ├── __main__.py
+│   ├── app.py
+│   ├── cli.py
 │   ├── database.py
 │   ├── models.py
 │   ├── repository.py
 │   ├── search.py
-│   ├── duplicate_check.py
-│   ├── export_csv.py
+│   ├── duplicates.py
+│   ├── csv_export.py
 │   └── backup.py
 ├── data/
 │   └── .gitkeep
@@ -409,13 +413,22 @@ pt-research-library/
 ├── exports/
 │   └── .gitkeep
 ├── docs/
-│   └── database_schema.md
+│   └── .gitkeep
 └── tests/
+    ├── test_app.py
+    ├── test_backup.py
+    ├── test_cli.py
+    ├── test_csv_export.py
     ├── test_database.py
     ├── test_repository.py
     ├── test_search.py
-    └── test_duplicate_check.py
+    ├── test_duplicates.py
+    ├── test_tags.py
+    ├── test_usage_history.py
+    └── test_phase1.py
 ```
+
+アプリケーションはリポジトリルートで `python3 -m src` により起動する。既定のデータベースは `data/pt_research_library.sqlite3`、CSV出力先は `exports/`、SQLiteバックアップ先は `backups/` とし、すべてプロジェクトルートを基準に解決する。
 
 ---
 
@@ -526,19 +539,19 @@ data/*
 
 Phase 1では、コマンドライン上の対話型メニュー形式を採用する。サブコマンド形式は採用しない。
 
-想定メニュー：
+メインメニュー：
 
 ```text
-1. 文献を登録
-2. 文献一覧
-3. 文献を検索
-4. 文献詳細
-5. 文献を編集
-6. 文献を削除
-7. タグ管理
-8. 使用履歴を登録
+1. 文献一覧
+2. 文献検索
+3. 文献登録
+4. 文献編集
+5. 文献削除
+6. タグ管理
+7. 使用履歴管理
+8. 文献詳細
 9. CSV出力
-10. バックアップ
+10. SQLiteバックアップ
 0. 終了
 ```
 
@@ -676,6 +689,6 @@ Codexは以下を厳守する。
 
 ## 23. 現時点での位置付け
 
-この仕様書は初版であり、Phase 1の実装開始前に利用者が確認する。
+この仕様書は、Step 9でPhase 1の検証済みproduction behaviorとの整合性を監査中の仕様書である。
 
 仕様を変更する場合は、変更理由と変更箇所を明示し、既存データとの互換性を確認する。

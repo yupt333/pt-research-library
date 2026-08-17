@@ -137,7 +137,7 @@ Includes:
 - export current results
 - exclude usage-history rows
 - core CSV export API accepts an explicit output file path whose parent exists
-- Phase 1 CLI will use exports/ as the default export location
+- Phase 1 CLI uses exports/ as the default export location
 
 ### Step 7: SQLite backup
 
@@ -154,7 +154,7 @@ Includes:
 
 ### Step 8: Interactive CLI
 
-Status: in progress
+Status: completed and pushed
 
 Completed sub-steps:
 
@@ -207,10 +207,10 @@ Completed sub-steps:
     - Includes repository-backed usage-history editing and deletion with
       confirmation, input, transaction, and data-isolation safety
 
-Current sub-step:
+Completed sub-step:
 
 - Step 8D: CLI completion
-  - Status: in progress
+  - Status: completed and pushed
   - Step 8D-1: dedicated literature detail
     - Status: completed and pushed
     - Includes complete literature detail display with tags, usage history,
@@ -228,9 +228,11 @@ Current sub-step:
     - Includes application database initialization, project-rooted default
       data/export/backup paths, and the `python3 -m src` entry point
   - Step 8D-5: overall CLI integration/display/usability cleanup
-    - Status: current sub-step, in progress
+    - Status: completed and pushed
+    - Includes final CLI-wide integration, display consistency, input
+      handling, cancellation behavior, and usability verification
 
-Planned scope:
+Completed scope:
 
 - initialize the application database
 - literature registration
@@ -248,15 +250,16 @@ Planned scope:
 
 ### Step 9: Integration and release preparation
 
-Planned scope:
+Status: current step, in progress
 
-- end-to-end tests
-- regression review
-- CLI operation verification
+Scope:
+
+- Phase 1 end-to-end tests
+- full regression verification
 - protected-data verification
-- README usage instructions
-- final specification consistency check
-- Phase 1 completion report
+- README completion
+- specification consistency verification
+- Phase 1 completion assessment
 
 ## Step entry requirements
 
