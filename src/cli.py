@@ -39,10 +39,11 @@ _MAIN_MENU = """理学療法文献ライブラリ
 5. 文献削除
 6. タグ管理
 7. 使用履歴管理
+8. 文献詳細
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
 _INVALID_MENU_MESSAGE = (
-    "入力エラー: 0、1、2、3、4、5、6、7のいずれかを選択してください。"
+    "入力エラー: 0、1、2、3、4、5、6、7、8のいずれかを選択してください。"
 )
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
@@ -1933,6 +1934,82 @@ def _run_search(
     return False
 
 
+def _run_literature_detail(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Display one literature record with its tags and usage history."""
+    try:
+        raw_literature_id = _read_input(
+            input_func,
+            "文献ID（ASCII数字）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id,
+            "文献ID",
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        literature = get_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if literature is None:
+        output_func("対象文献が見つかりません。")
+        return False
+
+    output_func("文献詳細:")
+    output_func(_format_edit_literature(literature))
+    output_func("タグ:")
+
+    try:
+        tags = list_tags_for_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if tags is None:
+        output_func("文献情報の取得中に対象文献が存在しなくなりました。")
+        return False
+    if not tags:
+        output_func("この文献にはタグが登録されていません。")
+    else:
+        for tag in tags:
+            output_func(_format_tag(tag))
+            output_func(_RECORD_SEPARATOR)
+
+    output_func("使用履歴:")
+    try:
+        histories = list_usage_history_for_literature(
+            connection,
+            literature_id,
+        )
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if histories is None:
+        output_func("文献情報の取得中に対象文献が存在しなくなりました。")
+        return False
+    if not histories:
+        output_func("この文献には使用履歴がありません。")
+        return False
+
+    for usage_history in histories:
+        output_func(_format_usage_history(usage_history))
+        output_func(_RECORD_SEPARATOR)
+    return False
+
+
 def run_cli(
     connection: sqlite3.Connection,
     *,
@@ -1952,7 +2029,7 @@ def run_cli(
         if choice == "0":
             output_func(_EXIT_MESSAGE)
             return None
-        if choice not in {"1", "2", "3", "4", "5", "6", "7"}:
+        if choice not in {"1", "2", "3", "4", "5", "6", "7", "8"}:
             output_func(_INVALID_MENU_MESSAGE)
             continue
 
@@ -2003,6 +2080,13 @@ def run_cli(
             output_func(_EXIT_MESSAGE)
             return None
         elif choice == "7" and _run_usage_history_management(
+            connection,
+            input_func,
+            output_func,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None
+        elif choice == "8" and _run_literature_detail(
             connection,
             input_func,
             output_func,

@@ -333,6 +333,14 @@ class CliTestCase(unittest.TestCase):
         ]
 
     @staticmethod
+    def literature_detail_actions(
+        literature_id: int | str,
+        *,
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return ["8", str(literature_id), final_menu_choice]
+
+    @staticmethod
     def usage_history_create_actions(
         literature_id: int | str,
         usage_type: str,
@@ -706,6 +714,7 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("5. 文献削除", outputs[0])
         self.assertIn("6. タグ管理", outputs[0])
         self.assertIn("7. 使用履歴管理", outputs[0])
+        self.assertIn("8. 文献詳細", outputs[0])
         self.assertIn("0. 終了", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
@@ -727,7 +736,7 @@ class CliTestCase(unittest.TestCase):
         _, feeder, outputs = self.run_with_actions(actions)
 
         error_message = (
-            "入力エラー: 0、1、2、3、4、5、6、7のいずれかを選択してください。"
+            "入力エラー: 0、1、2、3、4、5、6、7、8のいずれかを選択してください。"
         )
         self.assertEqual(
             outputs.count(error_message),
@@ -3196,8 +3205,9 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("5. 文献削除", outputs[0])
         self.assertIn("6. タグ管理", outputs[0])
         self.assertIn("7. 使用履歴管理", outputs[0])
+        self.assertIn("8. 文献詳細", outputs[0])
         self.assertIn(cli_module._INVALID_MENU_MESSAGE, outputs)
-        for choice in ("0", "1", "2", "3", "4", "5", "6", "7"):
+        for choice in ("0", "1", "2", "3", "4", "5", "6", "7", "8"):
             with self.subTest(choice=choice):
                 self.assertIn(choice, cli_module._INVALID_MENU_MESSAGE)
 
@@ -10583,7 +10593,7 @@ class CliTestCase(unittest.TestCase):
         invalid_count = 1200
         feeder = InputFeeder(
             [
-                "8",
+                "9",
                 "7",
                 "5",
                 "invalid",
@@ -12646,6 +12656,680 @@ class CliTestCase(unittest.TestCase):
                     deleted.assert_not_called()
                     self.assertEqual(self.table_snapshot(), before)
                     self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
+    def test_literature_detail_main_menu_zero_through_nine_contract(
+        self,
+    ) -> None:
+        feeder = InputFeeder(
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+        )
+        outputs: list[str] = []
+
+        with (
+            patch.object(
+                cli_module,
+                "list_literature",
+                return_value=[],
+            ) as listed,
+            patch.object(cli_module, "_run_search", return_value=False) as searched,
+            patch.object(
+                cli_module,
+                "_run_registration",
+                return_value=False,
+            ) as registered,
+            patch.object(cli_module, "_run_edit", return_value=False) as edited,
+            patch.object(cli_module, "_run_delete", return_value=False) as deleted,
+            patch.object(
+                cli_module,
+                "_run_tag_management",
+                return_value=False,
+            ) as tags_managed,
+            patch.object(
+                cli_module,
+                "_run_usage_history_management",
+                return_value=False,
+            ) as histories_managed,
+            patch.object(
+                cli_module,
+                "_run_literature_detail",
+                return_value=False,
+            ) as detailed,
+        ):
+            result = run_cli(
+                self.connection,
+                input_func=feeder,
+                output_func=outputs.append,
+            )
+
+        self.assertIsNone(result)
+        expected_options = (
+            "1. 文献一覧",
+            "2. 文献検索",
+            "3. 文献登録",
+            "4. 文献編集",
+            "5. 文献削除",
+            "6. タグ管理",
+            "7. 使用履歴管理",
+            "8. 文献詳細",
+            "0. 終了",
+        )
+        for option in expected_options:
+            with self.subTest(option=option):
+                self.assertIn(option, outputs[0])
+        self.assertNotIn("9. ", outputs[0])
+        listed.assert_called_once_with(self.connection)
+        for flow in (
+            searched,
+            registered,
+            edited,
+            deleted,
+            tags_managed,
+            histories_managed,
+            detailed,
+        ):
+            flow.assert_called_once_with(
+                self.connection,
+                feeder,
+                outputs.append,
+            )
+        self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 1)
+        self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+
+    def test_literature_detail_displays_all_fields_tags_and_histories_in_order(
+        self,
+    ) -> None:
+        literature_id = self.add_record(
+            '詳細 "Title", 改行\n保持',
+            authors='Author A, "Author B"',
+            journal="Detail Journal",
+            publication_year=2025,
+            volume="12",
+            issue="3",
+            pages="101-112",
+            doi="10.1000/detail",
+            pmid="00123",
+            url="https://example.test/detail",
+            language="日本語 / English",
+            publication_type="原著",
+            abstract="詳細抄録\nsecond line",
+            pdf_path="/tmp/detail literature.pdf",
+            personal_summary="自分の要約",
+            ai_summary="手動入力したAI要約",
+            ai_summary_status="修正済み",
+            general_note="一般メモ",
+            key_findings="主要な結果",
+            methods_note="方法メモ",
+            clinical_note="臨床メモ",
+            limitation_note="限界メモ",
+            relevance_note="関連メモ",
+            evidence_level="Level II",
+            verification_status="要確認",
+            adoption_status="採用候補",
+            exclusion_reason="除外理由",
+            rating=4,
+        )
+        literature = get_literature(self.connection, literature_id)
+        self.assertIsNotNone(literature)
+        assert literature is not None
+        tags = [
+            Tag(id=20, name="repository-first"),
+            Tag(id=10, name="repository-second"),
+        ]
+        histories = [
+            UsageHistory(
+                id=30,
+                literature_id=literature_id,
+                usage_type="学会発表",
+                project_name="AHD project",
+                usage_note="Methods slide",
+                used_at="2026-08-01",
+                created_at="2026-08-02T01:02:03.000Z",
+            ),
+            UsageHistory(
+                id=25,
+                literature_id=literature_id,
+                usage_type="note",
+                project_name=None,
+                usage_note=None,
+                used_at=None,
+                created_at="2026-08-03T01:02:03.000Z",
+            ),
+        ]
+        literature_before = vars(literature).copy()
+        tags_before = [vars(tag).copy() for tag in tags]
+        histories_before = [vars(history).copy() for history in histories]
+
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                return_value=literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "list_tags_for_literature",
+                return_value=tags,
+            ) as listed_tags,
+            patch.object(
+                cli_module,
+                "list_usage_history_for_literature",
+                return_value=histories,
+            ) as listed_histories,
+        ):
+            _, _, outputs = self.run_with_actions(
+                self.literature_detail_actions(literature_id)
+            )
+
+        retrieved.assert_called_once_with(self.connection, literature_id)
+        listed_tags.assert_called_once_with(self.connection, literature_id)
+        listed_histories.assert_called_once_with(self.connection, literature_id)
+        self.assertEqual(vars(literature), literature_before)
+        self.assertEqual([vars(tag) for tag in tags], tags_before)
+        self.assertEqual([vars(history) for history in histories], histories_before)
+        detail = cli_module._format_edit_literature(literature)
+        self.assertIn(detail, outputs)
+        expected_fields = ("id", *_REGISTRATION_FIELDS, "created_at", "updated_at")
+        position = -1
+        for index, field_name in enumerate(expected_fields):
+            with self.subTest(field_name=field_name):
+                prefix = "" if index == 0 else "\n"
+                position = detail.find(
+                    f"{prefix}{field_name}: ",
+                    position + 1,
+                )
+                self.assertNotEqual(position, -1)
+        displayed = "\n".join(outputs)
+        self.assertLess(displayed.index("文献詳細:"), displayed.index("タグ:"))
+        self.assertLess(displayed.index("タグ:"), displayed.index("使用履歴:"))
+        self.assertLess(
+            displayed.index(cli_module._format_tag(tags[0])),
+            displayed.index(cli_module._format_tag(tags[1])),
+        )
+        self.assertLess(
+            displayed.index(cli_module._format_usage_history(histories[0])),
+            displayed.index(cli_module._format_usage_history(histories[1])),
+        )
+        for value in (
+            "title: 詳細 \"Title\", 改行\n保持",
+            "personal_summary: 自分の要約",
+            "ai_summary: 手動入力したAI要約",
+            "ai_summary_status: 修正済み",
+            "general_note: 一般メモ",
+            "verification_status: 要確認",
+            "adoption_status: 採用候補",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, detail)
+
+    def test_literature_detail_empty_related_records_and_null_display(
+        self,
+    ) -> None:
+        literature_id = self.add_record("詳細NULL表示")
+        literature = get_literature(self.connection, literature_id)
+        self.assertIsNotNone(literature)
+        assert literature is not None
+        before = self.table_snapshot()
+
+        with (
+            patch.object(
+                cli_module,
+                "list_tags_for_literature",
+                wraps=list_tags_for_literature,
+            ) as listed_tags,
+            patch.object(
+                cli_module,
+                "list_usage_history_for_literature",
+                wraps=list_usage_history_for_literature,
+            ) as listed_histories,
+        ):
+            _, _, outputs = self.run_with_actions(
+                self.literature_detail_actions(literature_id)
+            )
+
+        listed_tags.assert_called_once_with(self.connection, literature_id)
+        listed_histories.assert_called_once_with(self.connection, literature_id)
+        detail = cli_module._format_edit_literature(literature)
+        self.assertIn(detail, outputs)
+        self.assertIn("authors: 未登録", detail)
+        self.assertIn("rating: 未登録", detail)
+        self.assertNotIn("None", detail)
+        self.assertIn("この文献にはタグが登録されていません。", outputs)
+        self.assertIn("この文献には使用履歴がありません。", outputs)
+        self.assertEqual(self.table_snapshot(), before)
+
+    def test_literature_detail_id_validation_missing_and_leading_zero(
+        self,
+    ) -> None:
+        invalid_values = (
+            "",
+            "0",
+            "-1",
+            "+1",
+            "1.5",
+            "1e3",
+            "１",
+            "١",
+            "id",
+            "1x",
+        )
+        for invalid_value in invalid_values:
+            with self.subTest(invalid_value=invalid_value):
+                with (
+                    patch.object(cli_module, "get_literature") as retrieved,
+                    patch.object(
+                        cli_module,
+                        "list_tags_for_literature",
+                    ) as listed_tags,
+                    patch.object(
+                        cli_module,
+                        "list_usage_history_for_literature",
+                    ) as listed_histories,
+                ):
+                    _, _, outputs = self.run_with_actions(
+                        ["8", invalid_value, "0"]
+                    )
+
+                retrieved.assert_not_called()
+                listed_tags.assert_not_called()
+                listed_histories.assert_not_called()
+                self.assertTrue(
+                    any(
+                        item.startswith("入力エラー: ")
+                        and "文献ID" in item
+                        and "ASCII" in item
+                        for item in outputs
+                    )
+                )
+
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "list_tags_for_literature",
+            ) as listed_tags,
+            patch.object(
+                cli_module,
+                "list_usage_history_for_literature",
+            ) as listed_histories,
+        ):
+            _, _, outputs = self.run_with_actions(
+                self.literature_detail_actions(999999)
+            )
+
+        retrieved.assert_called_once_with(self.connection, 999999)
+        listed_tags.assert_not_called()
+        listed_histories.assert_not_called()
+        self.assertIn("対象文献が見つかりません。", outputs)
+
+        literature_id = self.add_record("詳細leading zero")
+        padded_id = f" \t000{literature_id}\n "
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "list_tags_for_literature",
+                wraps=list_tags_for_literature,
+            ) as listed_tags,
+            patch.object(
+                cli_module,
+                "list_usage_history_for_literature",
+                wraps=list_usage_history_for_literature,
+            ) as listed_histories,
+        ):
+            _, _, outputs = self.run_with_actions(
+                self.literature_detail_actions(padded_id)
+            )
+
+        retrieved.assert_called_once_with(self.connection, literature_id)
+        listed_tags.assert_called_once_with(self.connection, literature_id)
+        listed_histories.assert_called_once_with(self.connection, literature_id)
+        self.assertTrue(
+            any(item.startswith(f"id: {literature_id}\n") for item in outputs)
+        )
+
+    def test_literature_detail_stops_at_each_disappearance_race(self) -> None:
+        literature_id = self.add_record("詳細race")
+        before = self.table_snapshot()
+
+        with (
+            patch.object(
+                cli_module,
+                "list_tags_for_literature",
+                return_value=None,
+            ) as listed_tags,
+            patch.object(
+                cli_module,
+                "list_usage_history_for_literature",
+            ) as listed_histories,
+        ):
+            _, _, tag_outputs = self.run_with_actions(
+                self.literature_detail_actions(literature_id)
+            )
+
+        listed_tags.assert_called_once_with(self.connection, literature_id)
+        listed_histories.assert_not_called()
+        self.assertIn(
+            "文献情報の取得中に対象文献が存在しなくなりました。",
+            tag_outputs,
+        )
+
+        tags = [Tag(id=2, name="race-tag")]
+        with (
+            patch.object(
+                cli_module,
+                "list_tags_for_literature",
+                return_value=tags,
+            ) as listed_tags,
+            patch.object(
+                cli_module,
+                "list_usage_history_for_literature",
+                return_value=None,
+            ) as listed_histories,
+        ):
+            _, _, usage_outputs = self.run_with_actions(
+                self.literature_detail_actions(literature_id)
+            )
+
+        listed_tags.assert_called_once_with(self.connection, literature_id)
+        listed_histories.assert_called_once_with(self.connection, literature_id)
+        self.assertIn(cli_module._format_tag(tags[0]), usage_outputs)
+        self.assertIn(
+            "文献情報の取得中に対象文献が存在しなくなりました。",
+            usage_outputs,
+        )
+        self.assertEqual(self.table_snapshot(), before)
+
+    def test_literature_detail_repository_sqlite_errors_are_announced_and_raised(
+        self,
+    ) -> None:
+        literature_id = self.add_record("詳細repository error")
+        literature = get_literature(self.connection, literature_id)
+        self.assertIsNotNone(literature)
+        assert literature is not None
+        before = self.table_snapshot()
+
+        for failing_api in ("get", "tags", "histories"):
+            with self.subTest(failing_api=failing_api):
+                expected = sqlite3.OperationalError(f"detail {failing_api}")
+                with (
+                    patch.object(
+                        cli_module,
+                        "get_literature",
+                        return_value=literature,
+                    ) as retrieved,
+                    patch.object(
+                        cli_module,
+                        "list_tags_for_literature",
+                        return_value=[],
+                    ) as listed_tags,
+                    patch.object(
+                        cli_module,
+                        "list_usage_history_for_literature",
+                        return_value=[],
+                    ) as listed_histories,
+                ):
+                    {
+                        "get": retrieved,
+                        "tags": listed_tags,
+                        "histories": listed_histories,
+                    }[failing_api].side_effect = expected
+                    with self.assertRaises(sqlite3.OperationalError) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(["8", str(literature_id)]),
+                            output_func=(outputs := []).append,
+                        )
+
+                self.assertIs(raised.exception, expected)
+                retrieved.assert_called_once_with(self.connection, literature_id)
+                if failing_api == "get":
+                    listed_tags.assert_not_called()
+                    listed_histories.assert_not_called()
+                elif failing_api == "tags":
+                    listed_tags.assert_called_once_with(
+                        self.connection,
+                        literature_id,
+                    )
+                    listed_histories.assert_not_called()
+                else:
+                    listed_tags.assert_called_once_with(
+                        self.connection,
+                        literature_id,
+                    )
+                    listed_histories.assert_called_once_with(
+                        self.connection,
+                        literature_id,
+                    )
+                self.assertEqual(
+                    outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                    1,
+                )
+                self.assertEqual(self.table_snapshot(), before)
+
+    def test_literature_detail_input_exception_boundaries(self) -> None:
+        before = self.table_snapshot()
+        for interruption in (EOFError("detail eof"), KeyboardInterrupt()):
+            with self.subTest(interruption=type(interruption).__name__):
+                with patch.object(cli_module, "get_literature") as retrieved:
+                    _, _, outputs = self.run_with_actions(["8", interruption])
+
+                retrieved.assert_not_called()
+                self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+                self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
+        for expected in (
+            ValueError("detail input value error"),
+            sqlite3.OperationalError("detail input sqlite error"),
+        ):
+            with self.subTest(expected=type(expected).__name__):
+                outputs: list[str] = []
+                with (
+                    patch.object(cli_module, "get_literature") as retrieved,
+                    self.assertRaises(type(expected)) as raised,
+                ):
+                    run_cli(
+                        self.connection,
+                        input_func=InputFeeder(["8", expected]),
+                        output_func=outputs.append,
+                    )
+
+                self.assertIs(raised.exception, expected)
+                retrieved.assert_not_called()
+                self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+        self.assertEqual(self.table_snapshot(), before)
+
+    def test_literature_detail_output_exceptions_do_not_retry_reads(
+        self,
+    ) -> None:
+        literature_id = self.add_record("詳細output error")
+        tag_id = create_tag(self.connection, "detail-output-tag")
+        attach_tag_to_literature(self.connection, literature_id, tag_id)
+        history_id = create_usage_history(
+            self.connection,
+            literature_id,
+            "detail-output-use",
+        )
+        before = self.table_snapshot()
+        cases = (
+            ("文献詳細:", RuntimeError("detail heading output"), 0, 0),
+            (
+                f"ID: {tag_id}\nname: detail-output-tag",
+                ValueError("detail tag output"),
+                1,
+                0,
+            ),
+            ("使用履歴:", sqlite3.OperationalError("detail usage heading"), 1, 0),
+            (
+                f"id: {history_id}\nliterature_id: {literature_id}\n",
+                RuntimeError("detail history output"),
+                1,
+                1,
+            ),
+        )
+
+        for failing_text, expected, tag_calls, history_calls in cases:
+            with self.subTest(failing_text=failing_text):
+                outputs: list[str] = []
+
+                def output_func(message: str) -> None:
+                    outputs.append(message)
+                    if failing_text in message:
+                        raise expected
+
+                with (
+                    patch.object(
+                        cli_module,
+                        "get_literature",
+                        wraps=get_literature,
+                    ) as retrieved,
+                    patch.object(
+                        cli_module,
+                        "list_tags_for_literature",
+                        wraps=list_tags_for_literature,
+                    ) as listed_tags,
+                    patch.object(
+                        cli_module,
+                        "list_usage_history_for_literature",
+                        wraps=list_usage_history_for_literature,
+                    ) as listed_histories,
+                    self.assertRaises(type(expected)) as raised,
+                ):
+                    run_cli(
+                        self.connection,
+                        input_func=InputFeeder(["8", str(literature_id)]),
+                        output_func=output_func,
+                    )
+
+                self.assertIs(raised.exception, expected)
+                retrieved.assert_called_once_with(self.connection, literature_id)
+                self.assertEqual(listed_tags.call_count, tag_calls)
+                self.assertEqual(listed_histories.call_count, history_calls)
+                self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+                self.assertEqual(self.table_snapshot(), before)
+
+    def test_literature_detail_preserves_active_transaction_and_marker(
+        self,
+    ) -> None:
+        database_path = self.directory / "detail-active-transaction.db"
+        initialize_database(database_path)
+        connection = sqlite3.connect(
+            database_path,
+            factory=TrackingConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        try:
+            literature_id = add_literature(
+                connection,
+                Literature(title="詳細active transaction"),
+            )
+            tag_id = create_tag(connection, "detail-committed-tag")
+            attach_tag_to_literature(connection, literature_id, tag_id)
+            create_usage_history(connection, literature_id, "committed use")
+            marker = connection.execute(
+                "INSERT INTO tags (name) VALUES (?)",
+                ("detail-pending-marker",),
+            )
+            marker_id = marker.lastrowid
+            self.assertIsNotNone(marker_id)
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            self.assertTrue(connection.in_transaction)
+
+            result, _, outputs = self.run_with_actions(
+                self.literature_detail_actions(literature_id),
+                connection=connection,
+            )
+
+            self.assertIsNone(result)
+            self.assertIn("文献詳細:", outputs)
+            self.assertIn("ID: " + str(tag_id) + "\nname: detail-committed-tag", outputs)
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (marker_id,),
+                ).fetchone()[0],
+                1,
+            )
+
+            sqlite3.Connection.rollback(connection)
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (marker_id,),
+                ).fetchone()[0],
+                0,
+            )
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_literature_detail_preserves_all_tables_schema_and_pragmas(
+        self,
+    ) -> None:
+        literature_id = self.add_record(
+            "詳細DB不変対象",
+            ai_summary="AI要約",
+            personal_summary="自分の要約",
+        )
+        other_id = self.add_record("詳細DB不変対象外")
+        first_tag_id = create_tag(self.connection, "detail-alpha")
+        second_tag_id = create_tag(self.connection, "detail-beta")
+        attach_tag_to_literature(
+            self.connection,
+            literature_id,
+            second_tag_id,
+        )
+        attach_tag_to_literature(
+            self.connection,
+            literature_id,
+            first_tag_id,
+        )
+        attach_tag_to_literature(self.connection, other_id, first_tag_id)
+        create_usage_history(self.connection, literature_id, "note")
+        create_usage_history(self.connection, literature_id, "学会発表")
+        create_usage_history(self.connection, other_id, "other")
+        self.connection.execute("PRAGMA user_version = 801")
+        tables_before = self.table_snapshot()
+        schema_before = self.schema_snapshot()
+        schema_version_before = self.connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = self.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+
+        _, _, outputs = self.run_with_actions(
+            self.literature_detail_actions(literature_id)
+        )
+
+        self.assertIn("文献詳細:", outputs)
+        self.assertEqual(self.table_snapshot(), tables_before)
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA schema_version").fetchone()[0],
+            schema_version_before,
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            user_version_before,
+        )
+        self.assertFalse(self.connection.in_transaction)
 
     def test_cli_creates_no_database_export_or_backup_artifacts(self) -> None:
         self.populate_search_records()

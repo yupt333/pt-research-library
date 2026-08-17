@@ -184,10 +184,8 @@ Completed sub-steps:
       related-count display, two-step confirmation, cascade-impact warnings,
       and input and transaction safety
 
-Current sub-step:
-
 - Step 8C: tag and usage-history management
-  - Status: in progress
+  - Status: completed and pushed
   - Step 8C-1A: tag listing, creation, and renaming
     - Status: completed and pushed
     - Includes repository-backed tag listing, creation, and renaming with
@@ -205,7 +203,24 @@ Current sub-step:
     - Includes repository-backed usage-history listing and creation with
       input, confirmation, and transaction safety
   - Step 8C-3B
+    - Status: completed and pushed
+    - Includes repository-backed usage-history editing and deletion with
+      confirmation, input, transaction, and data-isolation safety
+
+Current sub-step:
+
+- Step 8D: CLI completion
+  - Status: in progress
+  - Step 8D-1: dedicated literature detail
     - Status: current sub-step, in progress
+  - Step 8D-2: connect CSV export to CLI
+    - Status: not started
+  - Step 8D-3: connect SQLite backup to CLI
+    - Status: not started
+  - Step 8D-4: DB initialization/default path/entrypoint
+    - Status: not started
+  - Step 8D-5: overall CLI integration/display/usability cleanup
+    - Status: not started
 
 Planned scope:
 
