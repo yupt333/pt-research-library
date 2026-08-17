@@ -12,7 +12,7 @@ import src.repository as repository_module
 from src.cli import run_cli
 from src.database import connect_database, initialize_database
 from src.duplicates import DuplicateCandidate, find_duplicate_candidates
-from src.models import Literature, Tag
+from src.models import Literature, Tag, UsageHistory
 from src.repository import (
     add_literature,
     attach_tag_to_literature,
@@ -27,6 +27,7 @@ from src.repository import (
     list_literature,
     list_tags,
     list_tags_for_literature,
+    list_usage_history_for_literature,
     rename_tag,
     update_literature,
 )
@@ -313,6 +314,46 @@ class CliTestCase(unittest.TestCase):
             final_menu_choice,
         ]
 
+    @staticmethod
+    def literature_usage_history_list_actions(
+        literature_id: int | str,
+        *,
+        final_submenu_choice: str = "0",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "7",
+            "1",
+            str(literature_id),
+            final_submenu_choice,
+            final_menu_choice,
+        ]
+
+    @staticmethod
+    def usage_history_create_actions(
+        literature_id: int | str,
+        usage_type: str,
+        project_name: str = "",
+        usage_note: str = "",
+        used_at: str = "",
+        *,
+        confirmation: str = "1",
+        final_submenu_choice: str = "0",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "7",
+            "2",
+            str(literature_id),
+            usage_type,
+            project_name,
+            usage_note,
+            used_at,
+            confirmation,
+            final_submenu_choice,
+            final_menu_choice,
+        ]
+
     def add_record(self, title: str, **values: object) -> int:
         return add_literature(
             self.connection,
@@ -556,6 +597,7 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("4. 文献編集", outputs[0])
         self.assertIn("5. 文献削除", outputs[0])
         self.assertIn("6. タグ管理", outputs[0])
+        self.assertIn("7. 使用履歴管理", outputs[0])
         self.assertIn("0. 終了", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
@@ -577,7 +619,7 @@ class CliTestCase(unittest.TestCase):
         _, feeder, outputs = self.run_with_actions(actions)
 
         error_message = (
-            "入力エラー: 0、1、2、3、4、5、6のいずれかを選択してください。"
+            "入力エラー: 0、1、2、3、4、5、6、7のいずれかを選択してください。"
         )
         self.assertEqual(
             outputs.count(error_message),
@@ -3045,8 +3087,9 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("4. 文献編集", outputs[0])
         self.assertIn("5. 文献削除", outputs[0])
         self.assertIn("6. タグ管理", outputs[0])
+        self.assertIn("7. 使用履歴管理", outputs[0])
         self.assertIn(cli_module._INVALID_MENU_MESSAGE, outputs)
-        for choice in ("0", "1", "2", "3", "4", "5", "6"):
+        for choice in ("0", "1", "2", "3", "4", "5", "6", "7"):
             with self.subTest(choice=choice):
                 self.assertIn(choice, cli_module._INVALID_MENU_MESSAGE)
 
@@ -10427,6 +10470,966 @@ class CliTestCase(unittest.TestCase):
             if connection.in_transaction:
                 sqlite3.Connection.rollback(connection)
             sqlite3.Connection.close(connection)
+
+    def test_usage_history_main_and_submenu_contracts_and_dispatch(self) -> None:
+        invalid_count = 1200
+        feeder = InputFeeder(
+            [
+                "8",
+                "7",
+                "3",
+                "invalid",
+                *(["9"] * invalid_count),
+                "1",
+                "2",
+                "0",
+                "0",
+            ]
+        )
+        outputs: list[str] = []
+
+        with (
+            patch.object(
+                cli_module,
+                "_run_literature_usage_history_list",
+                return_value=False,
+            ) as list_flow,
+            patch.object(
+                cli_module,
+                "_run_usage_history_create",
+                return_value=False,
+            ) as create_flow,
+        ):
+            result = run_cli(
+                self.connection,
+                input_func=feeder,
+                output_func=outputs.append,
+            )
+
+        self.assertIsNone(result)
+        self.assertIn("7. 使用履歴管理", outputs[0])
+        self.assertNotIn("8. 終了", outputs[0])
+        self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 1)
+        self.assertIn("1. 文献別使用履歴一覧", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
+        self.assertIn("2. 使用履歴登録", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
+        self.assertIn("0. メインメニューに戻る", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
+        self.assertNotIn("3. メインメニューに戻る", cli_module._USAGE_HISTORY_MANAGEMENT_MENU)
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_USAGE_HISTORY_MENU_MESSAGE),
+            invalid_count + 2,
+        )
+        list_flow.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+        )
+        create_flow.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+        )
+        self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+
+    def test_usage_history_ids_are_positive_ascii_and_missing_stops_apis(
+        self,
+    ) -> None:
+        invalid_values = (
+            "",
+            "0",
+            "+1",
+            "-1",
+            "1.5",
+            "1e3",
+            "１",
+            "١",
+            "id",
+            "1x",
+        )
+        for operation in ("1", "2"):
+            for invalid_value in invalid_values:
+                with self.subTest(operation=operation, value=invalid_value):
+                    before = self.table_snapshot()
+                    with (
+                        patch.object(cli_module, "get_literature") as gotten,
+                        patch.object(
+                            cli_module,
+                            "list_usage_history_for_literature",
+                        ) as listed,
+                        patch.object(
+                            cli_module,
+                            "create_usage_history",
+                        ) as created,
+                    ):
+                        _, _, outputs = self.run_with_actions(
+                            ["7", operation, invalid_value, "0", "0"]
+                        )
+
+                    gotten.assert_not_called()
+                    listed.assert_not_called()
+                    created.assert_not_called()
+                    self.assertEqual(self.table_snapshot(), before)
+                    self.assertTrue(
+                        any(
+                            item.startswith("入力エラー: ")
+                            and "ASCII" in item
+                            for item in outputs
+                        )
+                    )
+
+        for operation in ("1", "2"):
+            with self.subTest(operation=operation, target="missing"):
+                with (
+                    patch.object(
+                        cli_module,
+                        "list_usage_history_for_literature",
+                    ) as listed,
+                    patch.object(
+                        cli_module,
+                        "create_usage_history",
+                    ) as created,
+                ):
+                    _, _, outputs = self.run_with_actions(
+                        ["7", operation, "999999", "0", "0"]
+                    )
+
+                listed.assert_not_called()
+                created.assert_not_called()
+                self.assertIn("対象文献が見つかりません。", outputs)
+
+        literature_id = self.add_record("Usage padded ID")
+        padded_id = f"  000{literature_id}\t"
+        _, _, list_outputs = self.run_with_actions(
+            self.literature_usage_history_list_actions(padded_id)
+        )
+        self.assertIn(f"文献ID: {literature_id}", list_outputs)
+        _, _, create_outputs = self.run_with_actions(
+            self.usage_history_create_actions(padded_id, "note")
+        )
+        self.assertIn("使用履歴を登録しました。", create_outputs)
+
+    def test_usage_history_list_empty_race_order_fields_and_read_safety(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Usage list target")
+        other_id = self.add_record("Usage list other")
+        first_id = create_usage_history(
+            self.connection,
+            literature_id,
+            "note",
+            project_name="AHD article",
+            usage_note="Methods",
+            used_at="2026-08-01",
+        )
+        second_id = create_usage_history(
+            self.connection,
+            literature_id,
+            "論文",
+        )
+        other_history_id = create_usage_history(
+            self.connection,
+            other_id,
+            "other",
+        )
+        pending = self.connection.execute(
+            "INSERT INTO tags (name) VALUES (?)",
+            ("pending-usage-list",),
+        )
+        before = self.table_snapshot()
+
+        with patch.object(
+            cli_module,
+            "list_usage_history_for_literature",
+            wraps=list_usage_history_for_literature,
+        ) as listed:
+            _, _, outputs = self.run_with_actions(
+                self.literature_usage_history_list_actions(literature_id)
+            )
+
+        listed.assert_called_once_with(self.connection, literature_id)
+        displayed = "\n".join(outputs)
+        self.assertIn(f"文献ID: {literature_id}", outputs)
+        self.assertIn("title: Usage list target", outputs)
+        self.assertLess(
+            displayed.index(f"id: {first_id}"),
+            displayed.index(f"id: {second_id}"),
+        )
+        self.assertNotIn(f"id: {other_history_id}", displayed)
+        for label in (
+            "id",
+            "literature_id",
+            "usage_type",
+            "project_name",
+            "usage_note",
+            "used_at",
+            "created_at",
+        ):
+            self.assertIn(f"{label}:", displayed)
+        self.assertGreaterEqual(displayed.count("未登録"), 3)
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE id = ?",
+                (pending.lastrowid,),
+            ).fetchone()[0],
+            1,
+        )
+        self.connection.rollback()
+
+        empty_id = self.add_record("Usage list empty")
+        _, _, empty_outputs = self.run_with_actions(
+            self.literature_usage_history_list_actions(empty_id)
+        )
+        self.assertIn("この文献には使用履歴がありません。", empty_outputs)
+
+        with patch.object(
+            cli_module,
+            "list_usage_history_for_literature",
+            return_value=None,
+        ):
+            _, _, race_outputs = self.run_with_actions(
+                self.literature_usage_history_list_actions(empty_id)
+            )
+        self.assertIn(
+            "文献情報の確認後に対象文献が存在しなくなりました。",
+            race_outputs,
+        )
+
+    def test_usage_history_create_success_preserves_data_and_schema(self) -> None:
+        literature_id = self.add_record("Usage create target")
+        other_id = self.add_record("Usage create other")
+        tag_id = create_tag(self.connection, "usage-create-tag")
+        attach_tag_to_literature(self.connection, literature_id, tag_id)
+        existing_id = create_usage_history(
+            self.connection,
+            literature_id,
+            "existing",
+        )
+        create_usage_history(self.connection, other_id, "other")
+        self.connection.execute("PRAGMA user_version = 108")
+        before = self.table_snapshot()
+        schema_before = self.schema_snapshot()
+        schema_version_before = self.connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = self.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+        raw_usage_type = "  独自用途  "
+        raw_project_name = "  Project name  "
+        raw_usage_note = "\tNote contents \n"
+
+        with patch.object(
+            cli_module,
+            "create_usage_history",
+            wraps=create_usage_history,
+        ) as created:
+            _, _, outputs = self.run_with_actions(
+                self.usage_history_create_actions(
+                    literature_id,
+                    raw_usage_type,
+                    raw_project_name,
+                    raw_usage_note,
+                    "2026-08-17",
+                )
+            )
+
+        created.assert_called_once_with(
+            self.connection,
+            literature_id,
+            raw_usage_type,
+            raw_project_name,
+            raw_usage_note,
+            "2026-08-17",
+        )
+        after = self.table_snapshot()
+        self.assertEqual(after["literature"], before["literature"])
+        self.assertEqual(after["tags"], before["tags"])
+        self.assertEqual(after["literature_tags"], before["literature_tags"])
+        self.assertEqual(after["usage_history"][:-1], before["usage_history"])
+        self.assertEqual(len(after["usage_history"]), len(before["usage_history"]) + 1)
+        new_row = after["usage_history"][-1]
+        self.assertEqual(
+            new_row[1:6],
+            (
+                literature_id,
+                "独自用途",
+                raw_project_name,
+                raw_usage_note,
+                "2026-08-17",
+            ),
+        )
+        self.assertIsInstance(new_row[6], str)
+        self.assertTrue(str(new_row[6]).endswith("Z"))
+        datetime.fromisoformat(str(new_row[6]).replace("Z", "+00:00"))
+        self.assertTrue(any(row[0] == existing_id for row in after["usage_history"]))
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA schema_version").fetchone()[0],
+            schema_version_before,
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            user_version_before,
+        )
+        self.assertFalse(self.connection.in_transaction)
+        self.assertIn("使用履歴を登録しました。", outputs)
+        self.assertIn(f"使用履歴ID: {new_row[0]}", outputs)
+        self.assertIn(f"文献ID: {literature_id}", outputs)
+
+    def test_usage_history_create_optional_validation_and_confirmation(self) -> None:
+        literature_id = self.add_record("Usage optional target")
+
+        _, _, outputs = self.run_with_actions(
+            self.usage_history_create_actions(
+                literature_id,
+                "note",
+                "  ",
+                "\t",
+                "\n",
+            )
+        )
+        rows = list_usage_history_for_literature(
+            self.connection,
+            literature_id,
+        )
+        self.assertIsNotNone(rows)
+        assert rows is not None
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0].project_name)
+        self.assertIsNone(rows[0].usage_note)
+        self.assertIsNone(rows[0].used_at)
+        self.assertIn("project_name: 未登録", outputs)
+
+        for case, actions, expected_message in (
+            (
+                "blank usage type",
+                ["7", "2", str(literature_id), "  ", "0", "0"],
+                "入力エラー: usage_typeは必須です。",
+            ),
+            (
+                "invalid date",
+                self.usage_history_create_actions(
+                    literature_id,
+                    "note",
+                    used_at="2025-02-29",
+                ),
+                "使用履歴登録エラー:",
+            ),
+            (
+                "confirmation loop and cancel",
+                [
+                    "7",
+                    "2",
+                    str(literature_id),
+                    "論文",
+                    "project",
+                    "note",
+                    "",
+                    "9",
+                    "2",
+                    "0",
+                    "0",
+                    "0",
+                ],
+                "使用履歴登録を中止しました。",
+            ),
+        ):
+            with self.subTest(case=case):
+                before = self.table_snapshot()
+                with patch.object(
+                    cli_module,
+                    "create_usage_history",
+                    wraps=create_usage_history,
+                ) as created:
+                    _, _, case_outputs = self.run_with_actions(actions)
+
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertTrue(
+                    any(item.startswith(expected_message) for item in case_outputs)
+                )
+                if case == "invalid date":
+                    created.assert_called_once()
+                else:
+                    created.assert_not_called()
+
+    def test_usage_history_create_rejects_initial_and_late_transactions(
+        self,
+    ) -> None:
+        tracking_path = self.directory / "usage-transaction.db"
+        initialize_database(tracking_path)
+        connection = sqlite3.connect(
+            tracking_path,
+            factory=TrackingConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        literature_id = add_literature(
+            connection,
+            Literature(title="Usage transaction target"),
+        )
+        try:
+            initial_marker = connection.execute(
+                "INSERT INTO tags (name) VALUES (?)",
+                ("pending-usage-initial",),
+            )
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            with patch.object(cli_module, "create_usage_history") as created:
+                _, _, outputs = self.run_with_actions(
+                    ["7", "2", "0", "0"],
+                    connection=connection,
+                )
+
+            created.assert_not_called()
+            self.assertIn(
+                cli_module._USAGE_HISTORY_CREATE_ACTIVE_TRANSACTION_MESSAGE,
+                outputs,
+            )
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (initial_marker.lastrowid,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            sqlite3.Connection.rollback(connection)
+
+            feeder = InputFeeder(
+                self.usage_history_create_actions(literature_id, "note")
+            )
+            late_markers: list[int] = []
+
+            def input_func(prompt: str) -> str:
+                value = feeder(prompt)
+                if value == "1" and len(feeder.prompts) == 8:
+                    marker = connection.execute(
+                        "INSERT INTO tags (name) VALUES (?)",
+                        ("pending-usage-late",),
+                    )
+                    late_markers.append(marker.lastrowid)
+                return value
+
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            outputs = []
+            with patch.object(cli_module, "create_usage_history") as created:
+                result = run_cli(
+                    connection,
+                    input_func=input_func,
+                    output_func=outputs.append,
+                )
+
+            self.assertIsNone(result)
+            created.assert_not_called()
+            self.assertEqual(len(late_markers), 1)
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (late_markers[0],),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertIn(
+                cli_module._USAGE_HISTORY_CREATE_ACTIVE_TRANSACTION_MESSAGE,
+                outputs,
+            )
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_usage_history_repository_exception_boundaries(self) -> None:
+        literature_id = self.add_record("Usage API errors")
+        cases = (
+            (
+                "list get",
+                "get_literature",
+                ["7", "1", str(literature_id)],
+            ),
+            (
+                "create get",
+                "get_literature",
+                ["7", "2", str(literature_id)],
+            ),
+            (
+                "list API",
+                "list_usage_history_for_literature",
+                ["7", "1", str(literature_id)],
+            ),
+        )
+        for case, api_name, actions in cases:
+            for expected in (
+                sqlite3.OperationalError(f"{case} sqlite"),
+                RuntimeError(f"{case} runtime"),
+            ):
+                with self.subTest(case=case, exception=type(expected).__name__):
+                    before = self.table_snapshot()
+                    outputs: list[str] = []
+                    with patch.object(
+                        cli_module,
+                        api_name,
+                        side_effect=expected,
+                    ) as failed_api:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    failed_api.assert_called_once_with(
+                        self.connection,
+                        literature_id,
+                    )
+                    self.assertEqual(self.table_snapshot(), before)
+                    if isinstance(expected, sqlite3.Error):
+                        self.assertEqual(
+                            outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                            1,
+                        )
+                    else:
+                        self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
+    def test_usage_history_create_api_exception_boundaries(self) -> None:
+        literature_id = self.add_record("Usage create API errors")
+        for expected in (
+            ValueError("usage value"),
+            sqlite3.OperationalError("usage sqlite"),
+            RuntimeError("usage runtime"),
+            EOFError("usage API EOF"),
+            KeyboardInterrupt(),
+        ):
+            with self.subTest(exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+                actions: list[object] = self.usage_history_create_actions(
+                    literature_id,
+                    "custom use",
+                    "project",
+                    "note",
+                    "2026-08-17",
+                )
+                if not isinstance(expected, ValueError):
+                    actions = actions[:-2]
+                with patch.object(
+                    cli_module,
+                    "create_usage_history",
+                    side_effect=expected,
+                ) as created:
+                    if isinstance(expected, ValueError):
+                        result = run_cli(
+                            self.connection,
+                            input_func=InputFeeder(actions),
+                            output_func=outputs.append,
+                        )
+                        self.assertIsNone(result)
+                        self.assertTrue(
+                            any(
+                                item.startswith("使用履歴登録エラー: ")
+                                for item in outputs
+                            )
+                        )
+                    else:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+                        self.assertIs(raised.exception, expected)
+
+                created.assert_called_once_with(
+                    self.connection,
+                    literature_id,
+                    "custom use",
+                    "project",
+                    "note",
+                    "2026-08-17",
+                )
+                self.assertEqual(self.table_snapshot(), before)
+                if isinstance(expected, sqlite3.Error):
+                    self.assertEqual(
+                        outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                        1,
+                    )
+                elif not isinstance(expected, ValueError):
+                    self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
+        for api_error in (
+            ValueError("usage error before output failure"),
+            sqlite3.OperationalError("usage database error before output failure"),
+        ):
+            with self.subTest(error_output=type(api_error).__name__):
+                output_error = RuntimeError("usage error output failure")
+
+                def output_func(message: str) -> None:
+                    if message.startswith("使用履歴登録エラー: ") or message == (
+                        cli_module._DATABASE_ERROR_MESSAGE
+                    ):
+                        raise output_error
+
+                with patch.object(
+                    cli_module,
+                    "create_usage_history",
+                    side_effect=api_error,
+                ):
+                    with self.assertRaises(RuntimeError) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(
+                                self.usage_history_create_actions(
+                                    literature_id,
+                                    "custom use",
+                                )[:-2]
+                            ),
+                            output_func=output_func,
+                        )
+
+                self.assertIs(raised.exception, output_error)
+                self.assertIsNot(raised.exception, api_error)
+
+    def test_real_sqlite_usage_history_insert_failure_is_atomic(self) -> None:
+        tracking_path = self.directory / "usage-insert-failure.db"
+        initialize_database(tracking_path)
+        connection = sqlite3.connect(
+            tracking_path,
+            factory=TrackingConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        literature_id = add_literature(
+            connection,
+            Literature(title="Usage failure target"),
+        )
+        other_id = add_literature(
+            connection,
+            Literature(title="Usage failure other"),
+        )
+        create_usage_history(connection, literature_id, "kept target")
+        create_usage_history(connection, other_id, "kept other")
+        tag_id = create_tag(connection, "usage-failure-tag")
+        attach_tag_to_literature(connection, literature_id, tag_id)
+        connection.execute("PRAGMA user_version = 109")
+        connection.execute(
+            """
+            CREATE TRIGGER force_cli_usage_insert_failure
+            BEFORE INSERT ON usage_history
+            BEGIN
+                SELECT RAISE(ABORT, 'forced CLI usage insert failure');
+            END
+            """
+        )
+        connection.commit()
+        before = self.table_snapshot_for(connection)
+        schema_before = self.schema_snapshot_for(connection)
+        schema_version_before = connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        captured: list[sqlite3.Error] = []
+
+        def failing_create(*args: object) -> int:
+            try:
+                return create_usage_history(*args)  # type: ignore[arg-type]
+            except sqlite3.Error as error:
+                captured.append(error)
+                raise
+
+        outputs: list[str] = []
+        try:
+            with patch.object(
+                cli_module,
+                "create_usage_history",
+                side_effect=failing_create,
+            ) as created:
+                with self.assertRaises(sqlite3.IntegrityError) as raised:
+                    run_cli(
+                        connection,
+                        input_func=InputFeeder(
+                            self.usage_history_create_actions(
+                                literature_id,
+                                "forced",
+                            )[:-2]
+                        ),
+                        output_func=outputs.append,
+                    )
+
+            created.assert_called_once_with(
+                connection,
+                literature_id,
+                "forced",
+                None,
+                None,
+                None,
+            )
+            self.assertEqual(len(captured), 1)
+            self.assertIs(raised.exception, captured[0])
+            self.assertEqual(self.table_snapshot_for(connection), before)
+            self.assertEqual(self.schema_snapshot_for(connection), schema_before)
+            self.assertEqual(
+                connection.execute("PRAGMA schema_version").fetchone()[0],
+                schema_version_before,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                user_version_before,
+            )
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertEqual(outputs.count(cli_module._DATABASE_ERROR_MESSAGE), 1)
+            self.assertNotIn("使用履歴を登録しました。", outputs)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_usage_history_success_output_failure_keeps_one_committed_row(
+        self,
+    ) -> None:
+        tracking_path = self.directory / "usage-output-failure.db"
+        initialize_database(tracking_path)
+        connection = sqlite3.connect(
+            tracking_path,
+            factory=TrackingConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        literature_id = add_literature(
+            connection,
+            Literature(title="Usage output target"),
+        )
+        other_id = add_literature(
+            connection,
+            Literature(title="Usage output other"),
+        )
+        create_usage_history(connection, literature_id, "kept target")
+        create_usage_history(connection, other_id, "kept other")
+        tag_id = create_tag(connection, "usage-output-tag")
+        attach_tag_to_literature(connection, literature_id, tag_id)
+        connection.execute("PRAGMA user_version = 110")
+        before = self.table_snapshot_for(connection)
+        schema_before = self.schema_snapshot_for(connection)
+        schema_version_before = connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        expected = RuntimeError("usage success output failure")
+        outputs: list[str] = []
+
+        def output_func(message: str) -> None:
+            outputs.append(message)
+            if message == "使用履歴を登録しました。":
+                raise expected
+
+        try:
+            with patch.object(
+                cli_module,
+                "create_usage_history",
+                wraps=create_usage_history,
+            ) as created:
+                with self.assertRaises(RuntimeError) as raised:
+                    run_cli(
+                        connection,
+                        input_func=InputFeeder(
+                            self.usage_history_create_actions(
+                                literature_id,
+                                "conference",
+                                "project",
+                                "slide 5",
+                                "2026-08-17",
+                            )[:-2]
+                        ),
+                        output_func=output_func,
+                    )
+
+            self.assertIs(raised.exception, expected)
+            created.assert_called_once_with(
+                connection,
+                literature_id,
+                "conference",
+                "project",
+                "slide 5",
+                "2026-08-17",
+            )
+            after = self.table_snapshot_for(connection)
+            self.assertEqual(after["literature"], before["literature"])
+            self.assertEqual(after["tags"], before["tags"])
+            self.assertEqual(after["literature_tags"], before["literature_tags"])
+            self.assertEqual(after["usage_history"][:-1], before["usage_history"])
+            self.assertEqual(
+                len(after["usage_history"]),
+                len(before["usage_history"]) + 1,
+            )
+            self.assertEqual(
+                after["usage_history"][-1][1:6],
+                (literature_id, "conference", "project", "slide 5", "2026-08-17"),
+            )
+            self.assertEqual(self.schema_snapshot_for(connection), schema_before)
+            self.assertEqual(
+                connection.execute("PRAGMA schema_version").fetchone()[0],
+                schema_version_before,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                user_version_before,
+            )
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertEqual(outputs.count("使用履歴を登録しました。"), 1)
+            self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_usage_history_input_exception_matrix(self) -> None:
+        literature_id = self.add_record("Usage input exceptions")
+        prefixes: tuple[tuple[str, list[object]], ...] = (
+            ("submenu", ["7"]),
+            ("list literature ID", ["7", "1"]),
+            ("create literature ID", ["7", "2"]),
+            ("usage type", ["7", "2", str(literature_id)]),
+            ("project name", ["7", "2", str(literature_id), "note"]),
+            (
+                "usage note",
+                ["7", "2", str(literature_id), "note", "project"],
+            ),
+            (
+                "used at",
+                ["7", "2", str(literature_id), "note", "project", "note"],
+            ),
+            (
+                "confirmation",
+                [
+                    "7",
+                    "2",
+                    str(literature_id),
+                    "note",
+                    "project",
+                    "note",
+                    "2026-08-17",
+                ],
+            ),
+        )
+        exception_factories = (
+            ("EOFError", lambda stage: EOFError(stage)),
+            ("KeyboardInterrupt", lambda stage: KeyboardInterrupt()),
+            ("RuntimeError", lambda stage: RuntimeError(stage)),
+            ("sqlite3.Error", lambda stage: sqlite3.OperationalError(stage)),
+        )
+        for stage, prefix in prefixes:
+            for exception_name, exception_factory in exception_factories:
+                with self.subTest(stage=stage, exception=exception_name):
+                    expected = exception_factory(stage)
+                    before = self.table_snapshot()
+                    outputs: list[str] = []
+                    feeder = InputFeeder([*prefix, expected])
+                    if isinstance(expected, (EOFError, KeyboardInterrupt)):
+                        result = run_cli(
+                            self.connection,
+                            input_func=feeder,
+                            output_func=outputs.append,
+                        )
+                        self.assertIsNone(result)
+                        self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+                    else:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=feeder,
+                                output_func=outputs.append,
+                            )
+                        self.assertIs(raised.exception, expected)
+                        self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+                    if isinstance(expected, sqlite3.Error):
+                        self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+                    self.assertEqual(self.table_snapshot(), before)
+
+    def test_usage_history_output_exceptions_propagate_without_writes(self) -> None:
+        literature_id = self.add_record("Usage output exceptions")
+        history_id = create_usage_history(self.connection, literature_id, "listed")
+        cases = (
+            (
+                "submenu",
+                ["7"],
+                cli_module._USAGE_HISTORY_MANAGEMENT_MENU,
+            ),
+            (
+                "list record",
+                ["7", "1", str(literature_id)],
+                f"id: {history_id}\nliterature_id: {literature_id}",
+            ),
+            (
+                "create confirmation",
+                [
+                    "7",
+                    "2",
+                    str(literature_id),
+                    "note",
+                    "project",
+                    "note",
+                    "",
+                ],
+                cli_module._USAGE_HISTORY_CREATE_CONFIRMATION_MENU,
+            ),
+        )
+        for case, actions, failing_prefix in cases:
+            for expected in (
+                RuntimeError(f"{case} output failure"),
+                sqlite3.OperationalError(f"{case} output sqlite failure"),
+            ):
+                with self.subTest(case=case, exception=type(expected).__name__):
+                    before = self.table_snapshot()
+                    outputs: list[str] = []
+
+                    def output_func(message: str) -> None:
+                        outputs.append(message)
+                        if message.startswith(failing_prefix):
+                            raise expected
+
+                    with patch.object(
+                        cli_module,
+                        "create_usage_history",
+                    ) as created:
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=output_func,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    created.assert_not_called()
+                    self.assertEqual(self.table_snapshot(), before)
+                    self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
 
     def test_cli_creates_no_database_export_or_backup_artifacts(self) -> None:
         self.populate_search_records()

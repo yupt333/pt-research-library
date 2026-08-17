@@ -1,15 +1,16 @@
-"""Interactive CLI for literature and tag management."""
+"""Interactive CLI for literature, tag, and usage-history management."""
 
 import sqlite3
 from collections.abc import Callable, Sequence
 from typing import Optional
 
 from src.duplicates import DuplicateCandidate, find_duplicate_candidates
-from src.models import Literature, Tag
+from src.models import Literature, Tag, UsageHistory
 from src.repository import (
     add_literature,
     attach_tag_to_literature,
     create_tag,
+    create_usage_history,
     delete_literature,
     delete_tag,
     detach_tag_from_literature,
@@ -19,6 +20,7 @@ from src.repository import (
     list_literature,
     list_tags,
     list_tags_for_literature,
+    list_usage_history_for_literature,
     rename_tag,
     update_literature,
 )
@@ -33,10 +35,11 @@ _MAIN_MENU = """理学療法文献ライブラリ
 4. 文献編集
 5. 文献削除
 6. タグ管理
+7. 使用履歴管理
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
 _INVALID_MENU_MESSAGE = (
-    "入力エラー: 0、1、2、3、4、5、6のいずれかを選択してください。"
+    "入力エラー: 0、1、2、3、4、5、6、7のいずれかを選択してください。"
 )
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
@@ -196,6 +199,19 @@ _TAG_ATTACH_ACTIVE_TRANSACTION_MESSAGE = (
 _TAG_DETACH_ACTIVE_TRANSACTION_MESSAGE = (
     "アクティブなトランザクション中は文献からタグを解除できません。"
 )
+_USAGE_HISTORY_MANAGEMENT_MENU = """使用履歴管理
+
+1. 文献別使用履歴一覧
+2. 使用履歴登録
+0. メインメニューに戻る"""
+_INVALID_USAGE_HISTORY_MENU_MESSAGE = (
+    "入力エラー: 0、1、2のいずれかを選択してください。"
+)
+_USAGE_HISTORY_CREATE_CONFIRMATION_MENU = """1. この使用履歴を登録する
+0. 登録を中止する"""
+_USAGE_HISTORY_CREATE_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中は使用履歴を登録できません。"
+)
 _DUPLICATE_REASON_LABELS = {
     "doi": "DOI一致",
     "pmid": "PMID一致",
@@ -260,6 +276,22 @@ def _format_tag(tag: Tag) -> str:
     return f"ID: {_display_value(tag.id)}\nname: {_display_value(tag.name)}"
 
 
+def _format_usage_history(usage_history: UsageHistory) -> str:
+    """Format every usage-history field in repository model order."""
+    fields = (
+        ("id", usage_history.id),
+        ("literature_id", usage_history.literature_id),
+        ("usage_type", usage_history.usage_type),
+        ("project_name", usage_history.project_name),
+        ("usage_note", usage_history.usage_note),
+        ("used_at", usage_history.used_at),
+        ("created_at", usage_history.created_at),
+    )
+    return "\n".join(
+        f"{label}: {_display_value(value)}" for label, value in fields
+    )
+
+
 def _format_duplicate_candidate(candidate: DuplicateCandidate) -> str:
     """Format one duplicate candidate without changing or reordering it."""
     literature = candidate.literature
@@ -316,6 +348,11 @@ def _optional_text(value: str) -> Optional[str]:
     """Trim CLI input and map an empty value to no search condition."""
     normalized = value.strip()
     return normalized or None
+
+
+def _optional_unmodified_text(value: str) -> Optional[str]:
+    """Map blank CLI input to None while preserving non-blank contents."""
+    return None if not value.strip() else value
 
 
 def _optional_ascii_integer(
@@ -1359,6 +1396,210 @@ def _run_tag_management(
             return True
 
 
+def _run_literature_usage_history_list(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Display one existing literature record's repository-provided history."""
+    try:
+        raw_literature_id = _read_input(
+            input_func,
+            "文献ID（ASCII数字）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id,
+            "文献ID",
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        literature = get_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if literature is None:
+        output_func("対象文献が見つかりません。")
+        return False
+
+    output_func("文献情報:")
+    output_func(f"文献ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+
+    try:
+        histories = list_usage_history_for_literature(
+            connection,
+            literature_id,
+        )
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if histories is None:
+        output_func("文献情報の確認後に対象文献が存在しなくなりました。")
+        return False
+    if not histories:
+        output_func("この文献には使用履歴がありません。")
+        return False
+
+    output_func("この文献の使用履歴:")
+    for usage_history in histories:
+        output_func(_format_usage_history(usage_history))
+        output_func(_RECORD_SEPARATOR)
+    return False
+
+
+def _run_usage_history_create(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Collect and confirm one repository-backed usage-history creation."""
+    if connection.in_transaction:
+        output_func(_USAGE_HISTORY_CREATE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        raw_literature_id = _read_input(
+            input_func,
+            "文献ID（ASCII数字）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id,
+            "文献ID",
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        literature = get_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if literature is None:
+        output_func("対象文献が見つかりません。")
+        return False
+
+    output_func("使用履歴登録対象の文献:")
+    output_func(f"文献ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+
+    raw_values: dict[str, str] = {}
+    prompts = (
+        ("usage_type", "usage_type（必須）: "),
+        ("project_name", "project_name（空欄で未登録）: "),
+        ("usage_note", "usage_note（空欄で未登録）: "),
+        ("used_at", "used_at（YYYY-MM-DD、空欄で未登録）: "),
+    )
+    for field_name, prompt in prompts:
+        try:
+            value = _read_input(input_func, prompt)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        raw_values[field_name] = value
+        if field_name == "usage_type" and not value.strip():
+            output_func("入力エラー: usage_typeは必須です。")
+            return False
+
+    usage_type = raw_values["usage_type"]
+    project_name = _optional_unmodified_text(raw_values["project_name"])
+    usage_note = _optional_unmodified_text(raw_values["usage_note"])
+    used_at = _optional_unmodified_text(raw_values["used_at"])
+
+    output_func("使用履歴登録内容を確認してください。")
+    output_func(f"文献ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+    output_func(f"usage_type: {_display_value(usage_type)}")
+    output_func(f"project_name: {_display_value(project_name)}")
+    output_func(f"usage_note: {_display_value(usage_note)}")
+    output_func(f"used_at: {_display_value(used_at)}")
+    output_func(_USAGE_HISTORY_CREATE_CONFIRMATION_MENU)
+    while True:
+        try:
+            raw_confirmation = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = raw_confirmation.strip()
+        if confirmation == "0":
+            output_func("使用履歴登録を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    if connection.in_transaction:
+        output_func(_USAGE_HISTORY_CREATE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        usage_history_id = create_usage_history(
+            connection,
+            literature_id,
+            usage_type,
+            project_name,
+            usage_note,
+            used_at,
+        )
+    except ValueError as error:
+        output_func(f"使用履歴登録エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    output_func("使用履歴を登録しました。")
+    output_func(f"使用履歴ID: {usage_history_id}")
+    output_func(f"文献ID: {literature_id}")
+    return False
+
+
+def _run_usage_history_management(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Run the usage-history submenu without recursion."""
+    while True:
+        output_func(_USAGE_HISTORY_MANAGEMENT_MENU)
+        try:
+            raw_choice = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        choice = raw_choice.strip()
+
+        if choice == "0":
+            return False
+        if choice not in {"1", "2"}:
+            output_func(_INVALID_USAGE_HISTORY_MENU_MESSAGE)
+            continue
+
+        if choice == "1" and _run_literature_usage_history_list(
+            connection,
+            input_func,
+            output_func,
+        ):
+            return True
+        if choice == "2" and _run_usage_history_create(
+            connection,
+            input_func,
+            output_func,
+        ):
+            return True
+
+
 def _run_search(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
@@ -1436,7 +1677,7 @@ def run_cli(
         if choice == "0":
             output_func(_EXIT_MESSAGE)
             return None
-        if choice not in {"1", "2", "3", "4", "5", "6"}:
+        if choice not in {"1", "2", "3", "4", "5", "6", "7"}:
             output_func(_INVALID_MENU_MESSAGE)
             continue
 
@@ -1480,6 +1721,13 @@ def run_cli(
             output_func(_EXIT_MESSAGE)
             return None
         elif choice == "6" and _run_tag_management(
+            connection,
+            input_func,
+            output_func,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None
+        elif choice == "7" and _run_usage_history_management(
             connection,
             input_func,
             output_func,
