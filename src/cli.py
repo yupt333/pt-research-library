@@ -249,9 +249,9 @@ _USAGE_HISTORY_EDIT_FIELD_MENU = """1. usage_type
 2. project_name
 3. usage_note
 4. used_at
-5. 編集中止"""
+0. 編集中止"""
 _INVALID_USAGE_HISTORY_EDIT_FIELD_MESSAGE = (
-    "入力エラー: 1、2、3、4、5のいずれかを選択してください。"
+    "入力エラー: 0、1、2、3、4のいずれかを選択してください。"
 )
 _USAGE_HISTORY_EDIT_PROMPTS = {
     "usage_type": "新しいusage_type（必須）: ",
@@ -539,7 +539,7 @@ def _run_registration(
     try:
         literature = Literature(**values)
     except ValueError as error:
-        output_func(f"登録エラー: {error}")
+        output_func(f"文献登録エラー: {error}")
         return False
 
     output_func("登録内容を確認してください。")
@@ -554,7 +554,7 @@ def _run_registration(
             pmid=literature.pmid,
         )
     except ValueError as error:
-        output_func(f"登録エラー: {error}")
+        output_func(f"文献登録エラー: {error}")
         return False
     except sqlite3.Error:
         output_func(_DATABASE_ERROR_MESSAGE)
@@ -582,7 +582,7 @@ def _run_registration(
     try:
         literature_id = add_literature(connection, literature)
     except ValueError as error:
-        output_func(f"登録エラー: {error}")
+        output_func(f"文献登録エラー: {error}")
         return False
     except sqlite3.Error:
         output_func(_DATABASE_ERROR_MESSAGE)
@@ -701,7 +701,7 @@ def _run_edit(
             {field_name: new_value},
         )
     except ValueError as error:
-        output_func(f"更新エラー: {error}")
+        output_func(f"文献編集エラー: {error}")
         return False
     except sqlite3.Error:
         output_func(_DATABASE_ERROR_MESSAGE)
@@ -1668,7 +1668,7 @@ def _run_usage_history_edit(
         except (EOFError, KeyboardInterrupt):
             return True
         field_choice = raw_field_choice.strip()
-        if field_choice == "5":
+        if field_choice == "0":
             output_func("使用履歴編集を中止しました。")
             return False
         if field_choice in {"1", "2", "3", "4"}:

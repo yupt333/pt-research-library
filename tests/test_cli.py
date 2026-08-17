@@ -1892,7 +1892,7 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(self.table_snapshot(), before)
         self.assertTrue(
             any(
-                item.startswith("登録エラー: ")
+                item.startswith("文献登録エラー: ")
                 and "title" in item
                 for item in outputs
             )
@@ -1941,7 +1941,7 @@ class CliTestCase(unittest.TestCase):
                 self.assertEqual(self.table_snapshot(), before)
                 self.assertTrue(
                     any(
-                        item.startswith("登録エラー: ")
+                        item.startswith("文献登録エラー: ")
                         and field_name in item
                         for item in outputs
                     )
@@ -2053,7 +2053,7 @@ class CliTestCase(unittest.TestCase):
                 self.assertEqual(self.table_snapshot(), before)
                 self.assertTrue(
                     any(
-                        item.startswith("登録エラー: ")
+                        item.startswith("文献登録エラー: ")
                         and "rating" in item
                         for item in outputs
                     )
@@ -2100,7 +2100,7 @@ class CliTestCase(unittest.TestCase):
                 self.assertEqual(self.table_snapshot(), before)
                 self.assertFalse(
                     any(
-                        item.startswith("登録エラー: ")
+                        item.startswith("文献登録エラー: ")
                         for item in outputs
                     )
                 )
@@ -2140,7 +2140,7 @@ class CliTestCase(unittest.TestCase):
                     self.assertEqual(self.table_snapshot(), before)
                     self.assertTrue(
                         any(
-                            item.startswith("登録エラー: ")
+                            item.startswith("文献登録エラー: ")
                             and "publication_year" in item
                             for item in outputs
                         )
@@ -2464,7 +2464,7 @@ class CliTestCase(unittest.TestCase):
                 )
                 self.assertFalse(
                     any(
-                        item.startswith("登録エラー: ")
+                        item.startswith("文献登録エラー: ")
                         for item in outputs
                     )
                 )
@@ -2498,7 +2498,7 @@ class CliTestCase(unittest.TestCase):
         added.assert_not_called()
         self.assertEqual(self.table_snapshot(), before)
         self.assertFalse(
-            any(item.startswith("登録エラー: ") for item in outputs)
+            any(item.startswith("文献登録エラー: ") for item in outputs)
         )
         self.assertNotIn("データベースエラーが発生しました。", outputs)
         self.assertNotIn("CLIを終了します。", outputs)
@@ -2544,7 +2544,7 @@ class CliTestCase(unittest.TestCase):
                 self.assertNotIn("CLIを終了します。", outputs)
                 self.assertFalse(
                     any(
-                        item.startswith("登録エラー: ")
+                        item.startswith("文献登録エラー: ")
                         for item in outputs
                     )
                 )
@@ -2754,7 +2754,7 @@ class CliTestCase(unittest.TestCase):
                         self.assertIsNone(result)
                         self.assertTrue(
                             any(
-                                item.startswith("登録エラー: ")
+                                item.startswith("文献登録エラー: ")
                                 for item in outputs
                             )
                         )
@@ -2815,7 +2815,7 @@ class CliTestCase(unittest.TestCase):
                         self.assertIsNone(result)
                         self.assertTrue(
                             any(
-                                item.startswith("登録エラー: ")
+                                item.startswith("文献登録エラー: ")
                                 for item in outputs
                             )
                         )
@@ -2896,7 +2896,7 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(connection.close_calls, 0)
         self.assertEqual(outputs.count("文献を登録しました。"), 1)
         self.assertFalse(
-            any(item.startswith("登録エラー: ") for item in outputs)
+            any(item.startswith("文献登録エラー: ") for item in outputs)
         )
         self.assertNotIn("データベースエラーが発生しました。", outputs)
         self.assertNotIn("CLIを終了します。", outputs)
@@ -2993,7 +2993,7 @@ class CliTestCase(unittest.TestCase):
             1,
         )
         self.assertFalse(
-            any(item.startswith("登録エラー: ") for item in outputs)
+            any(item.startswith("文献登録エラー: ") for item in outputs)
         )
         self.assertNotIn("CLIを終了します。", outputs)
 
@@ -3752,7 +3752,7 @@ class CliTestCase(unittest.TestCase):
                 )
                 self.assertTrue(
                     any(
-                        item.startswith("更新エラー: ")
+                        item.startswith("文献編集エラー: ")
                         and field_name in item
                         for item in outputs
                     )
@@ -3796,7 +3796,7 @@ class CliTestCase(unittest.TestCase):
                     before,
                 )
                 self.assertTrue(
-                    any(item.startswith("更新エラー: ") for item in outputs)
+                    any(item.startswith("文献編集エラー: ") for item in outputs)
                 )
 
     def test_edit_all_status_values_and_invalid_values(self) -> None:
@@ -3855,7 +3855,7 @@ class CliTestCase(unittest.TestCase):
             )
             self.assertTrue(
                 any(
-                    item.startswith("更新エラー: ")
+                    item.startswith("文献編集エラー: ")
                     and field_name in item
                     for item in outputs
                 )
@@ -3925,7 +3925,7 @@ class CliTestCase(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                item.startswith("更新エラー: ")
+                item.startswith("文献編集エラー: ")
                 and "pmid" in item
                 for item in invalid_outputs
             )
@@ -4207,7 +4207,7 @@ class CliTestCase(unittest.TestCase):
                         )
                         self.assertFalse(
                             any(
-                                item.startswith("更新エラー: ")
+                                item.startswith("文献編集エラー: ")
                                 for item in outputs
                             )
                         )
@@ -4371,7 +4371,7 @@ class CliTestCase(unittest.TestCase):
                             "After",
                             "1",
                         ]
-                        failing_message = f"更新エラー: {update_error}"
+                        failing_message = f"文献編集エラー: {update_error}"
                     else:
                         actions = [
                             "4",
@@ -4484,7 +4484,7 @@ class CliTestCase(unittest.TestCase):
                     if stage == "update_error":
                         self.assertEqual(
                             sum(
-                                item.startswith("更新エラー: ")
+                                item.startswith("文献編集エラー: ")
                                 for item in outputs
                             ),
                             1,
@@ -4492,7 +4492,7 @@ class CliTestCase(unittest.TestCase):
                     else:
                         self.assertFalse(
                             any(
-                                item.startswith("更新エラー: ")
+                                item.startswith("文献編集エラー: ")
                                 for item in outputs
                             )
                         )
@@ -4599,7 +4599,7 @@ class CliTestCase(unittest.TestCase):
                     )
                     self.assertFalse(
                         any(
-                            item.startswith("更新エラー: ")
+                            item.startswith("文献編集エラー: ")
                             for item in outputs
                         )
                     )
@@ -4917,7 +4917,7 @@ class CliTestCase(unittest.TestCase):
                         self.assertIsNone(result)
                         self.assertTrue(
                             any(
-                                item.startswith("更新エラー: ")
+                                item.startswith("文献編集エラー: ")
                                 for item in outputs
                             )
                         )
@@ -5193,7 +5193,7 @@ class CliTestCase(unittest.TestCase):
         self.assertEqual(connection.close_calls, 0)
         self.assertEqual(outputs.count("文献を更新しました。"), 1)
         self.assertFalse(
-            any(item.startswith("更新エラー: ") for item in outputs)
+            any(item.startswith("文献編集エラー: ") for item in outputs)
         )
         self.assertNotIn("データベースエラーが発生しました。", outputs)
         self.assertNotIn("CLIを終了します。", outputs)
@@ -11822,7 +11822,16 @@ class CliTestCase(unittest.TestCase):
         cancel_cases = (
             (
                 "field selection",
-                ["7", "3", str(history_id), "0", "5", "0", "0"],
+                [
+                    "7",
+                    "3",
+                    str(history_id),
+                    "5",
+                    "invalid",
+                    "0",
+                    "0",
+                    "0",
+                ],
                 cli_module._INVALID_USAGE_HISTORY_EDIT_FIELD_MESSAGE,
             ),
             (
@@ -14449,6 +14458,274 @@ class CliTestCase(unittest.TestCase):
             user_version_before,
         )
         self.assertFalse(self.connection.in_transaction)
+
+    def test_full_cli_session_integrates_all_completed_features(self) -> None:
+        integration_directory = self.directory / "full-cli-session"
+        export_directory = integration_directory / "exports"
+        backup_directory = integration_directory / "backups"
+        export_directory.mkdir(parents=True)
+        backup_directory.mkdir()
+
+        title = "Synthetic Step 8D-5 CLI integration literature"
+        updated_author = "Updated synthetic integration author"
+        tag_name = "synthetic-integration-tag"
+        usage_type = "synthetic-integration-use"
+        actions = [
+            "3",
+            *self.registration_values(
+                title=title,
+                authors="Initial synthetic integration author",
+                publication_year="2026",
+                personal_summary="Synthetic test-only summary",
+            ),
+            "1",
+            "1",
+            "8",
+            "1",
+            "4",
+            "1",
+            "2",
+            updated_author,
+            "1",
+            "6",
+            "2",
+            tag_name,
+            "1",
+            "6",
+            "1",
+            "1",
+            "1",
+            "0",
+            "7",
+            "2",
+            "1",
+            usage_type,
+            "Synthetic integration project",
+            "Synthetic integration note",
+            "2026-08-17",
+            "1",
+            "0",
+            *self.search_actions(keyword=title)[:-1],
+            "9",
+            "2",
+            "0",
+            "10",
+            "0",
+        ]
+
+        with (
+            patch.object(
+                cli_module,
+                "export_literature_csv",
+                wraps=cli_module.export_literature_csv,
+            ) as exported,
+            patch.object(
+                cli_module,
+                "create_database_backup",
+                wraps=cli_module.create_database_backup,
+            ) as backed_up,
+        ):
+            result, feeder, outputs = self.run_with_actions(
+                actions,
+                export_directory=export_directory,
+                backup_directory=backup_directory,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(len(feeder.prompts), len(actions))
+        self.assertEqual(outputs.count(cli_module._MAIN_MENU), 10)
+        self.assertEqual(outputs.count(cli_module._TAG_MANAGEMENT_MENU), 3)
+        self.assertEqual(
+            outputs.count(cli_module._USAGE_HISTORY_MANAGEMENT_MENU),
+            2,
+        )
+        self.assertEqual(outputs.count(cli_module._CSV_EXPORT_MENU), 2)
+        for success_message in (
+            "文献を登録しました。",
+            "文献詳細:",
+            "文献を更新しました。",
+            "文献へタグを付与しました。",
+            "使用履歴を登録しました。",
+            "CSVを出力しました。",
+            "データベースをバックアップしました。",
+            cli_module._EXIT_MESSAGE,
+        ):
+            self.assertIn(success_message, outputs)
+        self.assertGreaterEqual("\n".join(outputs).count(f"title: {title}"), 7)
+
+        literature = get_literature(self.connection, 1)
+        self.assertIsNotNone(literature)
+        assert literature is not None
+        self.assertEqual(literature.title, title)
+        self.assertEqual(literature.authors, updated_author)
+        self.assertEqual(
+            list_tags_for_literature(self.connection, 1),
+            [Tag(id=1, name=tag_name)],
+        )
+        histories = list_usage_history_for_literature(self.connection, 1)
+        self.assertIsNotNone(histories)
+        assert histories is not None
+        self.assertEqual(len(histories), 1)
+        self.assertEqual(histories[0].usage_type, usage_type)
+        self.assertEqual(
+            {
+                table: self.connection.execute(
+                    f"SELECT COUNT(*) FROM {table}"
+                ).fetchone()[0]
+                for table in (
+                    "literature",
+                    "tags",
+                    "literature_tags",
+                    "usage_history",
+                )
+            },
+            {
+                "literature": 1,
+                "tags": 1,
+                "literature_tags": 1,
+                "usage_history": 1,
+            },
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA foreign_key_check").fetchall(),
+            [],
+        )
+        self.assertFalse(self.connection.in_transaction)
+
+        csv_path = export_directory / "literature_search_results.csv"
+        exported.assert_called_once_with(
+            self.connection,
+            csv_path,
+            literature_ids=(1,),
+        )
+        self.assertTrue(csv_path.read_bytes().startswith(codecs.BOM_UTF8))
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as file:
+            reader = csv.DictReader(file)
+            rows = list(reader)
+            fieldnames = reader.fieldnames
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], title)
+        self.assertEqual(rows[0]["authors"], updated_author)
+        self.assertEqual(rows[0]["tags"], tag_name)
+        self.assertIsNotNone(fieldnames)
+        assert fieldnames is not None
+        self.assertNotIn("usage_type", fieldnames)
+
+        backed_up.assert_called_once_with(self.connection, backup_directory)
+        backup_paths = list(backup_directory.glob("*.sqlite3"))
+        self.assertEqual(len(backup_paths), 1)
+        backup_connection = sqlite3.connect(backup_paths[0])
+        try:
+            self.assertEqual(
+                backup_connection.execute("PRAGMA quick_check").fetchone()[0],
+                "ok",
+            )
+            self.assertEqual(
+                backup_connection.execute("PRAGMA foreign_key_check").fetchall(),
+                [],
+            )
+            self.assertEqual(
+                backup_connection.execute(
+                    "SELECT title, authors FROM literature WHERE id = ?",
+                    (1,),
+                ).fetchone(),
+                (title, updated_author),
+            )
+            self.assertEqual(
+                backup_connection.execute(
+                    "SELECT COUNT(*) FROM literature_tags"
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                backup_connection.execute(
+                    "SELECT usage_type FROM usage_history"
+                ).fetchone()[0],
+                usage_type,
+            )
+        finally:
+            backup_connection.close()
+
+    def test_cancel_operations_share_zero_contract_and_do_not_write(self) -> None:
+        literature_id = self.add_record(
+            "Synthetic cancellation integration literature",
+            authors="Unchanged synthetic author",
+        )
+        tag_id = create_tag(self.connection, "synthetic-cancel-tag")
+        attach_tag_to_literature(self.connection, literature_id, tag_id)
+        history_id = create_usage_history(
+            self.connection,
+            literature_id,
+            "synthetic-cancel-use",
+            "Unchanged synthetic project",
+        )
+        before = self.table_snapshot()
+        actions = [
+            "4",
+            str(literature_id),
+            "0",
+            "7",
+            "3",
+            str(history_id),
+            "5",
+            "invalid",
+            "0",
+            "0",
+            "5",
+            str(literature_id),
+            "0",
+            "1",
+            "0",
+        ]
+
+        with (
+            patch.object(cli_module, "update_literature") as literature_updated,
+            patch.object(cli_module, "update_usage_history") as history_updated,
+            patch.object(cli_module, "delete_literature") as literature_deleted,
+        ):
+            result, feeder, outputs = self.run_with_actions(actions)
+
+        self.assertIsNone(result)
+        self.assertEqual(len(feeder.prompts), len(actions))
+        literature_updated.assert_not_called()
+        history_updated.assert_not_called()
+        literature_deleted.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA foreign_key_check").fetchall(),
+            [],
+        )
+        self.assertEqual(
+            cli_module._USAGE_HISTORY_EDIT_FIELD_MENU,
+            """1. usage_type
+2. project_name
+3. usage_note
+4. used_at
+0. 編集中止""",
+        )
+        self.assertNotIn(
+            "5. 編集中止",
+            cli_module._USAGE_HISTORY_EDIT_FIELD_MENU,
+        )
+        self.assertEqual(
+            cli_module._INVALID_USAGE_HISTORY_EDIT_FIELD_MESSAGE,
+            "入力エラー: 0、1、2、3、4のいずれかを選択してください。",
+        )
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_USAGE_HISTORY_EDIT_FIELD_MESSAGE),
+            2,
+        )
+        for cancellation_message in (
+            "文献編集を中止しました。",
+            "使用履歴編集を中止しました。",
+            "文献削除を中止しました。",
+        ):
+            self.assertIn(cancellation_message, outputs)
+        self.assertIn(
+            "title: Synthetic cancellation integration literature",
+            "\n".join(outputs),
+        )
+        self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
 
     def test_cli_creates_no_database_export_or_backup_artifacts(self) -> None:
         self.populate_search_records()

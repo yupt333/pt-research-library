@@ -224,9 +224,11 @@ Current sub-step:
     - Includes repository-backed SQLite backup creation from the CLI with
       fixed default paths, input safety, and source-connection preservation
   - Step 8D-4: DB initialization/default path/entrypoint
-    - Status: current sub-step, in progress
+    - Status: completed and pushed
+    - Includes application database initialization, project-rooted default
+      data/export/backup paths, and the `python3 -m src` entry point
   - Step 8D-5: overall CLI integration/display/usability cleanup
-    - Status: not started
+    - Status: current sub-step, in progress
 
 Planned scope:
 
