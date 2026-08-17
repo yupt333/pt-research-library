@@ -20,11 +20,13 @@ from src.repository import (
     create_usage_history,
     delete_literature,
     delete_tag,
+    detach_tag_from_literature,
     get_literature,
     get_literature_related_counts,
     get_tag,
     list_literature,
     list_tags,
+    list_tags_for_literature,
     rename_tag,
     update_literature,
 )
@@ -254,6 +256,59 @@ class CliTestCase(unittest.TestCase):
             str(tag_id),
             confirmation,
             str(tag_id) if confirmed_id is None else confirmed_id,
+            final_submenu_choice,
+            final_menu_choice,
+        ]
+
+    @staticmethod
+    def literature_tag_list_actions(
+        literature_id: int | str,
+        *,
+        final_submenu_choice: str = "0",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "6",
+            "5",
+            str(literature_id),
+            final_submenu_choice,
+            final_menu_choice,
+        ]
+
+    @staticmethod
+    def tag_attach_actions(
+        literature_id: int | str,
+        tag_id: int | str,
+        *,
+        confirmation: str = "1",
+        final_submenu_choice: str = "0",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "6",
+            "6",
+            str(literature_id),
+            str(tag_id),
+            confirmation,
+            final_submenu_choice,
+            final_menu_choice,
+        ]
+
+    @staticmethod
+    def tag_detach_actions(
+        literature_id: int | str,
+        tag_id: int | str,
+        *,
+        confirmation: str = "1",
+        final_submenu_choice: str = "0",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "6",
+            "7",
+            str(literature_id),
+            str(tag_id),
+            confirmation,
             final_submenu_choice,
             final_menu_choice,
         ]
@@ -6631,16 +6686,18 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("2. タグ作成", cli_module._TAG_MANAGEMENT_MENU)
         self.assertIn("3. タグ名称変更", cli_module._TAG_MANAGEMENT_MENU)
         self.assertIn("4. タグ削除", cli_module._TAG_MANAGEMENT_MENU)
+        self.assertIn("5. 文献別タグ一覧", cli_module._TAG_MANAGEMENT_MENU)
+        self.assertIn("6. 文献へタグ付与", cli_module._TAG_MANAGEMENT_MENU)
+        self.assertIn("7. 文献からタグ解除", cli_module._TAG_MANAGEMENT_MENU)
         self.assertIn(
             "0. メインメニューに戻る",
             cli_module._TAG_MANAGEMENT_MENU,
         )
         self.assertNotIn(
-            "5. メインメニューに戻る",
+            "8. メインメニューに戻る",
             cli_module._TAG_MANAGEMENT_MENU,
         )
-        for forbidden in ("タグ付与", "タグ解除", "使用履歴"):
-            self.assertNotIn(forbidden, cli_module._TAG_MANAGEMENT_MENU)
+        self.assertNotIn("使用履歴", cli_module._TAG_MANAGEMENT_MENU)
         self.assertEqual(
             outputs.count(cli_module._INVALID_TAG_MENU_MESSAGE),
             invalid_count + 2,
@@ -6658,17 +6715,29 @@ class CliTestCase(unittest.TestCase):
             invalid_count + 5,
         )
 
-    def test_tag_submenu_zero_returns_four_deletes_and_five_stays_invalid(
+    def test_tag_submenu_zero_returns_eight_invalid_and_new_choices_dispatch(
         self,
     ) -> None:
-        feeder = InputFeeder(["6", "5", "0", "6", "4", "0", "0"])
+        feeder = InputFeeder(["6", "8", "5", "6", "7", "0", "0"])
         outputs: list[str] = []
 
-        with patch.object(
-            cli_module,
-            "_run_tag_delete",
-            return_value=False,
-        ) as delete_flow:
+        with (
+            patch.object(
+                cli_module,
+                "_run_literature_tag_list",
+                return_value=False,
+            ) as list_flow,
+            patch.object(
+                cli_module,
+                "_run_tag_attach",
+                return_value=False,
+            ) as attach_flow,
+            patch.object(
+                cli_module,
+                "_run_tag_detach",
+                return_value=False,
+            ) as detach_flow,
+        ):
             result = run_cli(
                 self.connection,
                 input_func=feeder,
@@ -6678,35 +6747,1444 @@ class CliTestCase(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(
             cli_module._INVALID_TAG_MENU_MESSAGE,
-            "入力エラー: 0、1、2、3、4のいずれかを選択してください。",
+            "入力エラー: 0〜7のいずれかを選択してください。",
         )
         self.assertEqual(
             outputs.count(cli_module._INVALID_TAG_MENU_MESSAGE),
             1,
         )
-        self.assertEqual(outputs.count(cli_module._TAG_MANAGEMENT_MENU), 4)
+        self.assertEqual(outputs.count(cli_module._TAG_MANAGEMENT_MENU), 5)
         self.assertEqual(
             sum("理学療法文献ライブラリ" in item for item in outputs),
-            3,
+            2,
         )
-        first_tag_menu = outputs.index(cli_module._TAG_MANAGEMENT_MENU)
-        invalid_message = outputs.index(cli_module._INVALID_TAG_MENU_MESSAGE)
-        second_tag_menu = outputs.index(
-            cli_module._TAG_MANAGEMENT_MENU,
-            first_tag_menu + 1,
+        list_flow.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
         )
-        next_main_menu = next(
-            index
-            for index, message in enumerate(
-                outputs[second_tag_menu + 1 :],
-                start=second_tag_menu + 1,
+        attach_flow.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+        )
+        detach_flow.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+        )
+
+    def test_new_literature_tag_flows_validate_positive_ascii_ids(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Step 8C-2 ID validation")
+        tag_id = create_tag(self.connection, "id-validation-tag")
+        attach_tag_to_literature(self.connection, literature_id, tag_id)
+        invalid_values = (
+            "",
+            "0",
+            "+1",
+            "-1",
+            "1.5",
+            "1e3",
+            "１",
+            "١",
+            "id",
+            "1x",
+        )
+        cases = (
+            ("list literature", "5", []),
+            ("attach literature", "6", []),
+            ("attach tag", "6", [str(literature_id)]),
+            ("detach literature", "7", []),
+            ("detach tag", "7", [str(literature_id)]),
+        )
+
+        for case, operation, prefix in cases:
+            for invalid_value in invalid_values:
+                with self.subTest(case=case, invalid_value=invalid_value):
+                    before = self.table_snapshot()
+                    with (
+                        patch.object(
+                            cli_module,
+                            "attach_tag_to_literature",
+                        ) as attached,
+                        patch.object(
+                            cli_module,
+                            "detach_tag_from_literature",
+                        ) as detached,
+                    ):
+                        _, _, outputs = self.run_with_actions(
+                            [
+                                "6",
+                                operation,
+                                *prefix,
+                                invalid_value,
+                                "0",
+                                "0",
+                            ]
+                        )
+
+                    attached.assert_not_called()
+                    detached.assert_not_called()
+                    self.assertEqual(self.table_snapshot(), before)
+                    self.assertTrue(
+                        any(
+                            item.startswith("入力エラー: ")
+                            and "ASCII" in item
+                            for item in outputs
+                        )
+                    )
+
+    def test_literature_tag_list_handles_missing_empty_and_race_none(
+        self,
+    ) -> None:
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "list_tags_for_literature",
+            ) as listed,
+        ):
+            _, _, missing_outputs = self.run_with_actions(
+                self.literature_tag_list_actions(999999)
             )
-            if "理学療法文献ライブラリ" in message
+
+        retrieved.assert_called_once_with(self.connection, 999999)
+        listed.assert_not_called()
+        self.assertIn("対象文献が見つかりません。", missing_outputs)
+
+        literature_id = self.add_record("タグなし文献")
+        before = self.table_snapshot()
+        with patch.object(
+            cli_module,
+            "list_tags_for_literature",
+            wraps=list_tags_for_literature,
+        ) as listed:
+            _, feeder, empty_outputs = self.run_with_actions(
+                self.literature_tag_list_actions(literature_id)
+            )
+
+        listed.assert_called_once_with(self.connection, literature_id)
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertIn(f"文献ID: {literature_id}", empty_outputs)
+        self.assertIn("title: タグなし文献", empty_outputs)
+        self.assertIn(
+            "この文献にはタグが登録されていません。",
+            empty_outputs,
         )
-        self.assertLess(first_tag_menu, invalid_message)
-        self.assertLess(invalid_message, second_tag_menu)
-        self.assertLess(second_tag_menu, next_main_menu)
-        delete_flow.assert_called_once()
+        self.assertNotIn("タグID（ASCII数字）: ", feeder.prompts)
+
+        with patch.object(
+            cli_module,
+            "list_tags_for_literature",
+            return_value=None,
+        ) as listed:
+            _, _, race_outputs = self.run_with_actions(
+                self.literature_tag_list_actions(literature_id)
+            )
+
+        listed.assert_called_once_with(self.connection, literature_id)
+        self.assertIn(
+            "文献情報の確認後に対象文献が存在しなくなりました。",
+            race_outputs,
+        )
+        self.assertEqual(self.table_snapshot(), before)
+
+    def test_literature_tag_list_preserves_order_and_read_transaction(
+        self,
+    ) -> None:
+        literature_id = self.add_record("一覧順序とtransaction")
+        beta_id = create_tag(self.connection, "Beta")
+        alpha_id = create_tag(self.connection, "alpha")
+        pending_id = create_tag(self.connection, "gamma")
+        attach_tag_to_literature(self.connection, literature_id, beta_id)
+        attach_tag_to_literature(self.connection, literature_id, alpha_id)
+        self.connection.execute(
+            """
+            INSERT INTO literature_tags (literature_id, tag_id)
+            VALUES (?, ?)
+            """,
+            (literature_id, pending_id),
+        )
+        self.assertTrue(self.connection.in_transaction)
+        before = self.table_snapshot()
+
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "list_tags_for_literature",
+                wraps=list_tags_for_literature,
+            ) as listed,
+        ):
+            _, _, outputs = self.run_with_actions(
+                self.literature_tag_list_actions(f" \t00{literature_id}\n ")
+            )
+
+        retrieved.assert_called_once_with(self.connection, literature_id)
+        listed.assert_called_once_with(self.connection, literature_id)
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertTrue(self.connection.in_transaction)
+        displayed_tags = [
+            item
+            for item in outputs
+            if item.startswith("ID: ") and "\nname: " in item
+        ]
+        self.assertEqual(
+            displayed_tags,
+            [
+                f"ID: {alpha_id}\nname: alpha",
+                f"ID: {beta_id}\nname: Beta",
+                f"ID: {pending_id}\nname: gamma",
+            ],
+        )
+        self.connection.rollback()
+        self.assertEqual(
+            list_tags_for_literature(self.connection, literature_id),
+            [
+                Tag(id=alpha_id, name="alpha"),
+                Tag(id=beta_id, name="Beta"),
+            ],
+        )
+
+    def test_tag_attach_success_and_duplicate_are_isolated_and_safe(
+        self,
+    ) -> None:
+        target_literature_id = self.add_record("付与対象文献")
+        other_literature_id = self.add_record("付与対象外文献")
+        target_tag_id = create_tag(self.connection, "Shoulder")
+        other_tag_id = create_tag(self.connection, "Ultrasound")
+        attach_tag_to_literature(
+            self.connection,
+            other_literature_id,
+            target_tag_id,
+        )
+        attach_tag_to_literature(
+            self.connection,
+            target_literature_id,
+            other_tag_id,
+        )
+        create_usage_history(
+            self.connection,
+            target_literature_id,
+            "attach-preserved-use",
+        )
+        self.connection.execute("PRAGMA user_version = 102")
+        before = self.table_snapshot()
+        schema_before = self.schema_snapshot()
+        schema_version_before = self.connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = self.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "get_tag",
+                wraps=get_tag,
+            ) as tag_retrieved,
+            patch.object(
+                cli_module,
+                "attach_tag_to_literature",
+                wraps=attach_tag_to_literature,
+            ) as attached,
+            patch.object(cli_module, "create_tag") as created,
+        ):
+            _, _, outputs = self.run_with_actions(
+                self.tag_attach_actions(
+                    f" 00{target_literature_id} ",
+                    f"\t00{target_tag_id}\n",
+                )
+            )
+
+        retrieved.assert_called_once_with(
+            self.connection,
+            target_literature_id,
+        )
+        tag_retrieved.assert_called_once_with(self.connection, target_tag_id)
+        attached.assert_called_once_with(
+            self.connection,
+            target_literature_id,
+            target_tag_id,
+        )
+        created.assert_not_called()
+        after = self.table_snapshot()
+        self.assertEqual(after["literature"], before["literature"])
+        self.assertEqual(after["tags"], before["tags"])
+        self.assertEqual(after["usage_history"], before["usage_history"])
+        self.assertEqual(
+            after["literature_tags"],
+            sorted(
+                [
+                    *before["literature_tags"],
+                    (target_literature_id, target_tag_id),
+                ]
+            ),
+        )
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA schema_version").fetchone()[0],
+            schema_version_before,
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            user_version_before,
+        )
+        for expected in (
+            f"文献ID: {target_literature_id}",
+            "title: 付与対象文献",
+            f"タグID: {target_tag_id}",
+            "tag name: Shoulder",
+            "文献へタグを付与しました。",
+        ):
+            self.assertIn(expected, outputs)
+
+        before_duplicate = self.table_snapshot()
+        with patch.object(
+            cli_module,
+            "attach_tag_to_literature",
+            wraps=attach_tag_to_literature,
+        ) as attached:
+            _, _, duplicate_outputs = self.run_with_actions(
+                self.tag_attach_actions(
+                    target_literature_id,
+                    target_tag_id,
+                )
+            )
+
+        attached.assert_called_once_with(
+            self.connection,
+            target_literature_id,
+            target_tag_id,
+        )
+        self.assertEqual(self.table_snapshot(), before_duplicate)
+        self.assertIn(
+            "このタグは既に対象文献へ付与されています。",
+            duplicate_outputs,
+        )
+        self.assertNotIn("文献へタグを付与しました。", duplicate_outputs)
+        self.assertFalse(self.connection.in_transaction)
+
+    def test_tag_attach_missing_targets_confirmation_cancel_and_value_error(
+        self,
+    ) -> None:
+        literature_id = self.add_record("付与安全性")
+        tag_id = create_tag(self.connection, "attach-safety")
+        before = self.table_snapshot()
+
+        with (
+            patch.object(cli_module, "get_tag") as tag_retrieved,
+            patch.object(
+                cli_module,
+                "attach_tag_to_literature",
+            ) as attached,
+        ):
+            _, _, missing_literature_outputs = self.run_with_actions(
+                self.tag_attach_actions(999999, tag_id)
+            )
+        tag_retrieved.assert_not_called()
+        attached.assert_not_called()
+        self.assertIn(
+            "対象文献が見つかりません。",
+            missing_literature_outputs,
+        )
+
+        with patch.object(
+            cli_module,
+            "attach_tag_to_literature",
+        ) as attached:
+            _, _, missing_tag_outputs = self.run_with_actions(
+                self.tag_attach_actions(literature_id, 999999)
+            )
+        attached.assert_not_called()
+        self.assertIn("対象タグが見つかりません。", missing_tag_outputs)
+
+        invalid_count = 1200
+        with patch.object(
+            cli_module,
+            "attach_tag_to_literature",
+        ) as attached:
+            _, _, cancel_outputs = self.run_with_actions(
+                [
+                    "6",
+                    "6",
+                    str(literature_id),
+                    str(tag_id),
+                    "",
+                    "invalid",
+                    *(["9"] * invalid_count),
+                    " 0 ",
+                    "0",
+                    "0",
+                ]
+            )
+        attached.assert_not_called()
+        self.assertEqual(
+            cancel_outputs.count(cli_module._INVALID_CONFIRMATION_MESSAGE),
+            invalid_count + 2,
+        )
+        self.assertIn("文献へのタグ付与を中止しました。", cancel_outputs)
+
+        expected = ValueError("parents disappeared before attach")
+        with patch.object(
+            cli_module,
+            "attach_tag_to_literature",
+            side_effect=expected,
+        ) as attached:
+            _, _, error_outputs = self.run_with_actions(
+                self.tag_attach_actions(literature_id, tag_id)
+            )
+        attached.assert_called_once_with(
+            self.connection,
+            literature_id,
+            tag_id,
+        )
+        self.assertIn(f"タグ付与エラー: {expected}", error_outputs)
+        self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, error_outputs)
+        self.assertEqual(self.table_snapshot(), before)
+
+    def test_tag_detach_success_isolated_and_false_is_not_retried(
+        self,
+    ) -> None:
+        target_literature_id = self.add_record("解除対象文献")
+        other_literature_id = self.add_record("解除対象外文献")
+        target_tag_id = create_tag(self.connection, "Shared")
+        other_tag_id = create_tag(self.connection, "Reliability")
+        for literature_id, tag_id in (
+            (target_literature_id, target_tag_id),
+            (target_literature_id, other_tag_id),
+            (other_literature_id, target_tag_id),
+        ):
+            attach_tag_to_literature(
+                self.connection,
+                literature_id,
+                tag_id,
+            )
+        create_usage_history(
+            self.connection,
+            target_literature_id,
+            "detach-preserved-use",
+        )
+        self.connection.execute("PRAGMA user_version = 103")
+        before = self.table_snapshot()
+        schema_before = self.schema_snapshot()
+        schema_version_before = self.connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = self.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+
+        with (
+            patch.object(
+                cli_module,
+                "get_literature",
+                wraps=get_literature,
+            ) as retrieved,
+            patch.object(
+                cli_module,
+                "list_tags_for_literature",
+                wraps=list_tags_for_literature,
+            ) as listed,
+            patch.object(
+                cli_module,
+                "get_tag",
+                wraps=get_tag,
+            ) as tag_retrieved,
+            patch.object(
+                cli_module,
+                "detach_tag_from_literature",
+                wraps=detach_tag_from_literature,
+            ) as detached,
+        ):
+            _, _, outputs = self.run_with_actions(
+                self.tag_detach_actions(
+                    f" 00{target_literature_id} ",
+                    f"\t00{target_tag_id}\n",
+                )
+            )
+
+        retrieved.assert_called_once_with(
+            self.connection,
+            target_literature_id,
+        )
+        listed.assert_called_once_with(
+            self.connection,
+            target_literature_id,
+        )
+        tag_retrieved.assert_called_once_with(self.connection, target_tag_id)
+        detached.assert_called_once_with(
+            self.connection,
+            target_literature_id,
+            target_tag_id,
+        )
+        after = self.table_snapshot()
+        self.assertEqual(after["literature"], before["literature"])
+        self.assertEqual(after["tags"], before["tags"])
+        self.assertEqual(after["usage_history"], before["usage_history"])
+        self.assertEqual(
+            after["literature_tags"],
+            [
+                row
+                for row in before["literature_tags"]
+                if row != (target_literature_id, target_tag_id)
+            ],
+        )
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA schema_version").fetchone()[0],
+            schema_version_before,
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            user_version_before,
+        )
+        for expected in (
+            f"文献ID: {target_literature_id}",
+            "title: 解除対象文献",
+            f"タグID: {target_tag_id}",
+            "tag name: Shared",
+            "タグレコード自体は削除されません。",
+            "文献レコード自体は削除されません。",
+            "文献からタグを解除しました。",
+        ):
+            self.assertIn(expected, outputs)
+        self.assertEqual(
+            list_tags_for_literature(
+                self.connection,
+                target_literature_id,
+            ),
+            [Tag(id=other_tag_id, name="Reliability")],
+        )
+        self.assertEqual(
+            list_tags_for_literature(
+                self.connection,
+                other_literature_id,
+            ),
+            [Tag(id=target_tag_id, name="Shared")],
+        )
+        self.assertIsNotNone(get_literature(self.connection, target_literature_id))
+        self.assertIsNotNone(get_tag(self.connection, target_tag_id))
+
+        attach_tag_to_literature(
+            self.connection,
+            target_literature_id,
+            target_tag_id,
+        )
+        before_false = self.table_snapshot()
+        with patch.object(
+            cli_module,
+            "detach_tag_from_literature",
+            return_value=False,
+        ) as detached:
+            _, _, false_outputs = self.run_with_actions(
+                self.tag_detach_actions(
+                    target_literature_id,
+                    target_tag_id,
+                )
+            )
+
+        detached.assert_called_once_with(
+            self.connection,
+            target_literature_id,
+            target_tag_id,
+        )
+        self.assertEqual(self.table_snapshot(), before_false)
+        self.assertIn(
+            "確認後に対象のタグ関連付けが存在しなくなりました。",
+            false_outputs,
+        )
+        self.assertNotIn("文献からタグを解除しました。", false_outputs)
+        self.assertFalse(self.connection.in_transaction)
+
+    def test_tag_detach_missing_empty_unattached_and_cancel_are_safe(
+        self,
+    ) -> None:
+        literature_id = self.add_record("解除安全性")
+        empty_literature_id = self.add_record("解除タグなし")
+        attached_tag_id = create_tag(self.connection, "attached")
+        unattached_tag_id = create_tag(self.connection, "unattached")
+        attach_tag_to_literature(
+            self.connection,
+            literature_id,
+            attached_tag_id,
+        )
+        before = self.table_snapshot()
+
+        with (
+            patch.object(
+                cli_module,
+                "list_tags_for_literature",
+            ) as listed,
+            patch.object(
+                cli_module,
+                "detach_tag_from_literature",
+            ) as detached,
+        ):
+            _, _, missing_literature_outputs = self.run_with_actions(
+                self.tag_detach_actions(999999, attached_tag_id)
+            )
+        listed.assert_not_called()
+        detached.assert_not_called()
+        self.assertIn(
+            "対象文献が見つかりません。",
+            missing_literature_outputs,
+        )
+
+        with (
+            patch.object(cli_module, "get_tag") as tag_retrieved,
+            patch.object(
+                cli_module,
+                "detach_tag_from_literature",
+            ) as detached,
+        ):
+            _, feeder, empty_outputs = self.run_with_actions(
+                ["6", "7", str(empty_literature_id), "0", "0"]
+            )
+        tag_retrieved.assert_not_called()
+        detached.assert_not_called()
+        self.assertNotIn("タグID（ASCII数字）: ", feeder.prompts)
+        self.assertIn(
+            "この文献には解除できるタグがありません。",
+            empty_outputs,
+        )
+
+        with patch.object(
+            cli_module,
+            "detach_tag_from_literature",
+        ) as detached:
+            _, _, missing_tag_outputs = self.run_with_actions(
+                self.tag_detach_actions(literature_id, 999999)
+            )
+        detached.assert_not_called()
+        self.assertIn("対象タグが見つかりません。", missing_tag_outputs)
+
+        with patch.object(
+            cli_module,
+            "detach_tag_from_literature",
+        ) as detached:
+            _, _, unattached_outputs = self.run_with_actions(
+                self.tag_detach_actions(
+                    literature_id,
+                    unattached_tag_id,
+                )
+            )
+        detached.assert_not_called()
+        self.assertIn(
+            "このタグは対象文献に付与されていません。",
+            unattached_outputs,
+        )
+
+        invalid_count = 1200
+        with patch.object(
+            cli_module,
+            "detach_tag_from_literature",
+        ) as detached:
+            _, _, cancel_outputs = self.run_with_actions(
+                [
+                    "6",
+                    "7",
+                    str(literature_id),
+                    str(attached_tag_id),
+                    "",
+                    "invalid",
+                    *(["9"] * invalid_count),
+                    " 0 ",
+                    "0",
+                    "0",
+                ]
+            )
+        detached.assert_not_called()
+        self.assertEqual(
+            cancel_outputs.count(cli_module._INVALID_CONFIRMATION_MESSAGE),
+            invalid_count + 2,
+        )
+        self.assertIn(
+            "文献からのタグ解除を中止しました。",
+            cancel_outputs,
+        )
+        self.assertEqual(self.table_snapshot(), before)
+
+    def test_tag_attach_and_detach_reject_initial_and_late_transactions(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "attach",
+                "6",
+                cli_module._TAG_ATTACH_ACTIVE_TRANSACTION_MESSAGE,
+                "attach_tag_to_literature",
+            ),
+            (
+                "detach",
+                "7",
+                cli_module._TAG_DETACH_ACTIVE_TRANSACTION_MESSAGE,
+                "detach_tag_from_literature",
+            ),
+        )
+
+        for index, (case, option, message, api_name) in enumerate(cases):
+            with self.subTest(case=case):
+                connection, literature_id, target_tag_id, other_tag_id = (
+                    self.create_tracking_tag_fixture(
+                        f"step-8c2-transaction-{index}"
+                    )
+                )
+                try:
+                    operation_tag_id = (
+                        other_tag_id if case == "attach" else target_tag_id
+                    )
+                    marker = connection.execute(
+                        "INSERT INTO tags (name) VALUES (?)",
+                        (f"pending-{case}-initial",),
+                    )
+                    connection.commit_calls = 0
+                    connection.rollback_calls = 0
+                    connection.close_calls = 0
+
+                    with patch.object(cli_module, api_name) as write_api:
+                        _, feeder, outputs = self.run_with_actions(
+                            ["6", option, "0", "0"],
+                            connection=connection,
+                        )
+
+                    write_api.assert_not_called()
+                    self.assertEqual(
+                        feeder.prompts,
+                        [
+                            "選択してください: ",
+                            "選択してください: ",
+                            "選択してください: ",
+                            "選択してください: ",
+                        ],
+                    )
+                    self.assertIn(message, outputs)
+                    self.assertTrue(connection.in_transaction)
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM tags WHERE id = ?",
+                            (marker.lastrowid,),
+                        ).fetchone()[0],
+                        1,
+                    )
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                    sqlite3.Connection.rollback(connection)
+
+                    relation_before = connection.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM literature_tags
+                        WHERE literature_id = ? AND tag_id = ?
+                        """,
+                        (literature_id, operation_tag_id),
+                    ).fetchone()[0]
+                    feeder = InputFeeder(
+                        [
+                            "6",
+                            option,
+                            str(literature_id),
+                            str(operation_tag_id),
+                            "1",
+                            "0",
+                            "0",
+                        ]
+                    )
+                    marker_ids: list[int] = []
+
+                    def input_func(prompt: str) -> str:
+                        value = feeder(prompt)
+                        if value == "1" and len(feeder.prompts) == 5:
+                            inserted = connection.execute(
+                                "INSERT INTO tags (name) VALUES (?)",
+                                (f"pending-{case}-late",),
+                            )
+                            marker_ids.append(inserted.lastrowid)
+                        return value
+
+                    connection.commit_calls = 0
+                    connection.rollback_calls = 0
+                    connection.close_calls = 0
+                    outputs = []
+                    with patch.object(cli_module, api_name) as write_api:
+                        result = run_cli(
+                            connection,
+                            input_func=input_func,
+                            output_func=outputs.append,
+                        )
+
+                    self.assertIsNone(result)
+                    write_api.assert_not_called()
+                    self.assertEqual(len(marker_ids), 1)
+                    self.assertIn(message, outputs)
+                    self.assertTrue(connection.in_transaction)
+                    self.assertEqual(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*)
+                            FROM literature_tags
+                            WHERE literature_id = ? AND tag_id = ?
+                            """,
+                            (literature_id, operation_tag_id),
+                        ).fetchone()[0],
+                        relation_before,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM tags WHERE id = ?",
+                            (marker_ids[0],),
+                        ).fetchone()[0],
+                        1,
+                    )
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                    sqlite3.Connection.rollback(connection)
+                finally:
+                    if connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
+
+    def test_new_literature_tag_repository_exception_boundaries(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Step 8C-2 API boundaries")
+        tag_id = create_tag(self.connection, "api-boundary-tag")
+        attach_tag_to_literature(self.connection, literature_id, tag_id)
+        cases = (
+            (
+                "list get literature",
+                "get_literature",
+                ["6", "5", str(literature_id)],
+            ),
+            (
+                "list tags",
+                "list_tags_for_literature",
+                ["6", "5", str(literature_id)],
+            ),
+            (
+                "attach get literature",
+                "get_literature",
+                ["6", "6", str(literature_id)],
+            ),
+            (
+                "attach get tag",
+                "get_tag",
+                ["6", "6", str(literature_id), str(tag_id)],
+            ),
+            (
+                "attach write",
+                "attach_tag_to_literature",
+                ["6", "6", str(literature_id), str(tag_id), "1"],
+            ),
+            (
+                "detach get literature",
+                "get_literature",
+                ["6", "7", str(literature_id)],
+            ),
+            (
+                "detach list tags",
+                "list_tags_for_literature",
+                ["6", "7", str(literature_id)],
+            ),
+            (
+                "detach get tag",
+                "get_tag",
+                ["6", "7", str(literature_id), str(tag_id)],
+            ),
+            (
+                "detach write",
+                "detach_tag_from_literature",
+                ["6", "7", str(literature_id), str(tag_id), "1"],
+            ),
+        )
+
+        for case, api_name, actions in cases:
+            for exception_type in (
+                sqlite3.OperationalError,
+                RuntimeError,
+            ):
+                with self.subTest(case=case, exception=exception_type.__name__):
+                    expected = exception_type(f"{case} failure")
+                    before = self.table_snapshot()
+                    outputs: list[str] = []
+                    with patch.object(
+                        cli_module,
+                        api_name,
+                        side_effect=expected,
+                    ) as failed_api:
+                        with self.assertRaises(exception_type) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    failed_api.assert_called_once()
+                    self.assertEqual(self.table_snapshot(), before)
+                    if issubclass(exception_type, sqlite3.Error):
+                        self.assertEqual(
+                            outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                            1,
+                        )
+                    else:
+                        self.assertNotIn(
+                            cli_module._DATABASE_ERROR_MESSAGE,
+                            outputs,
+                        )
+                    self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+
+        expected = ValueError("unexpected detach value failure")
+        before = self.table_snapshot()
+        with patch.object(
+            cli_module,
+            "detach_tag_from_literature",
+            side_effect=expected,
+        ) as detached:
+            with self.assertRaises(ValueError) as raised:
+                run_cli(
+                    self.connection,
+                    input_func=InputFeeder(
+                        ["6", "7", str(literature_id), str(tag_id), "1"]
+                    ),
+                    output_func=lambda _: None,
+                )
+        self.assertIs(raised.exception, expected)
+        detached.assert_called_once()
+        self.assertEqual(self.table_snapshot(), before)
+
+    def test_new_literature_tag_input_interruptions_exit_without_writes(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Step 8C-2 input interruption")
+        tag_id = create_tag(self.connection, "input-interruption-tag")
+        attach_tag_to_literature(self.connection, literature_id, tag_id)
+        positions = (
+            ("list literature ID", ["6", "5"]),
+            ("attach literature ID", ["6", "6"]),
+            ("attach tag ID", ["6", "6", str(literature_id)]),
+            (
+                "attach confirmation",
+                ["6", "6", str(literature_id), str(tag_id)],
+            ),
+            ("detach literature ID", ["6", "7"]),
+            ("detach tag ID", ["6", "7", str(literature_id)]),
+            (
+                "detach confirmation",
+                ["6", "7", str(literature_id), str(tag_id)],
+            ),
+        )
+
+        for position, prefix in positions:
+            for expected in (EOFError(position), KeyboardInterrupt()):
+                with self.subTest(
+                    position=position,
+                    exception=type(expected).__name__,
+                ):
+                    before = self.table_snapshot()
+                    outputs: list[str] = []
+                    with (
+                        patch.object(
+                            cli_module,
+                            "attach_tag_to_literature",
+                        ) as attached,
+                        patch.object(
+                            cli_module,
+                            "detach_tag_from_literature",
+                        ) as detached,
+                    ):
+                        result = run_cli(
+                            self.connection,
+                            input_func=InputFeeder([*prefix, expected]),
+                            output_func=outputs.append,
+                        )
+
+                    self.assertIsNone(result)
+                    attached.assert_not_called()
+                    detached.assert_not_called()
+                    self.assertEqual(self.table_snapshot(), before)
+                    self.assertEqual(
+                        outputs.count(cli_module._EXIT_MESSAGE),
+                        1,
+                    )
+                    self.assertNotIn(repr(expected), "\n".join(outputs))
+
+    def test_new_literature_tag_unexpected_input_exceptions_propagate(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Step 8C-2 unexpected input")
+        tag_id = create_tag(self.connection, "unexpected-input-tag")
+        attach_tag_to_literature(self.connection, literature_id, tag_id)
+        cases = (
+            (
+                "list",
+                ["6", "5"],
+                RuntimeError("list input failure"),
+            ),
+            (
+                "attach",
+                ["6", "6", str(literature_id)],
+                sqlite3.OperationalError("attach input sqlite failure"),
+            ),
+            (
+                "detach",
+                ["6", "7", str(literature_id), str(tag_id)],
+                ValueError("detach confirmation input failure"),
+            ),
+        )
+
+        for case, prefix, expected in cases:
+            with self.subTest(case=case):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+                with (
+                    patch.object(
+                        cli_module,
+                        "attach_tag_to_literature",
+                    ) as attached,
+                    patch.object(
+                        cli_module,
+                        "detach_tag_from_literature",
+                    ) as detached,
+                ):
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder([*prefix, expected]),
+                            output_func=outputs.append,
+                        )
+
+                self.assertIs(raised.exception, expected)
+                attached.assert_not_called()
+                detached.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+                self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+
+    def test_new_literature_tag_output_exceptions_propagate_before_write(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Step 8C-2 output boundary")
+        tag_id = create_tag(self.connection, "output-boundary-tag")
+        attach_tag_to_literature(self.connection, literature_id, tag_id)
+        cases = (
+            (
+                "list",
+                ["6", "5", str(literature_id)],
+                "文献情報:",
+            ),
+            (
+                "attach",
+                ["6", "6", str(literature_id), str(tag_id)],
+                "文献へのタグ付与内容を確認してください。",
+            ),
+            (
+                "detach",
+                ["6", "7", str(literature_id), str(tag_id)],
+                "文献からのタグ解除内容を確認してください。",
+            ),
+        )
+
+        for case, actions, failing_message in cases:
+            for expected in (
+                RuntimeError(f"{case} output failure"),
+                sqlite3.OperationalError(f"{case} output sqlite failure"),
+            ):
+                with self.subTest(case=case, exception=type(expected).__name__):
+                    before = self.table_snapshot()
+                    outputs: list[str] = []
+
+                    def output_func(message: str) -> None:
+                        outputs.append(message)
+                        if message == failing_message:
+                            raise expected
+
+                    with (
+                        patch.object(
+                            cli_module,
+                            "attach_tag_to_literature",
+                        ) as attached,
+                        patch.object(
+                            cli_module,
+                            "detach_tag_from_literature",
+                        ) as detached,
+                    ):
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=output_func,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    attached.assert_not_called()
+                    detached.assert_not_called()
+                    self.assertEqual(self.table_snapshot(), before)
+                    self.assertEqual(outputs.count(failing_message), 1)
+                    self.assertNotIn(
+                        cli_module._DATABASE_ERROR_MESSAGE,
+                        outputs,
+                    )
+                    self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+
+    def test_new_tag_database_error_output_failure_propagates_output_error(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Step 8C-2 DB output boundary")
+        tag_id = create_tag(self.connection, "db-output-boundary-tag")
+        attach_tag_to_literature(self.connection, literature_id, tag_id)
+        cases = (
+            (
+                "literature tag list",
+                "list_tags_for_literature",
+                ["6", "5", str(literature_id)],
+            ),
+            (
+                "tag attach",
+                "attach_tag_to_literature",
+                ["6", "6", str(literature_id), str(tag_id), "1"],
+            ),
+            (
+                "tag detach",
+                "detach_tag_from_literature",
+                ["6", "7", str(literature_id), str(tag_id), "1"],
+            ),
+        )
+
+        for case, api_name, actions in cases:
+            with self.subTest(case=case):
+                database_error = sqlite3.OperationalError(
+                    f"{case} database failure"
+                )
+                output_error = RuntimeError(f"{case} output failure")
+
+                def output_func(message: str) -> None:
+                    if message == cli_module._DATABASE_ERROR_MESSAGE:
+                        raise output_error
+
+                with patch.object(
+                    cli_module,
+                    api_name,
+                    side_effect=database_error,
+                ):
+                    with self.assertRaises(RuntimeError) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(actions),
+                            output_func=output_func,
+                        )
+
+                self.assertIs(raised.exception, output_error)
+                self.assertIsNot(raised.exception, database_error)
+
+    def test_real_sqlite_tag_attach_and_detach_failures_are_atomic(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "attach",
+                "attach_tag_to_literature",
+                """
+                CREATE TRIGGER force_cli_mapping_insert_failure
+                BEFORE INSERT ON literature_tags
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced CLI mapping insert failure');
+                END
+                """,
+                "文献へタグを付与しました。",
+            ),
+            (
+                "detach",
+                "detach_tag_from_literature",
+                """
+                CREATE TRIGGER force_cli_mapping_delete_failure
+                BEFORE DELETE ON literature_tags
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced CLI mapping delete failure');
+                END
+                """,
+                "文献からタグを解除しました。",
+            ),
+        )
+
+        for index, (case, api_name, trigger_sql, success_message) in enumerate(
+            cases
+        ):
+            with self.subTest(case=case):
+                connection, literature_id, target_tag_id, other_tag_id = (
+                    self.create_tracking_tag_fixture(
+                        f"real-sqlite-{case}-failure-{index}"
+                    )
+                )
+                try:
+                    operation_tag_id = (
+                        other_tag_id if case == "attach" else target_tag_id
+                    )
+                    connection.execute("PRAGMA user_version = 104")
+                    connection.execute(trigger_sql)
+                    connection.commit()
+                    before = self.table_snapshot_for(connection)
+                    schema_before = self.schema_snapshot_for(connection)
+                    schema_version_before = connection.execute(
+                        "PRAGMA schema_version"
+                    ).fetchone()[0]
+                    user_version_before = connection.execute(
+                        "PRAGMA user_version"
+                    ).fetchone()[0]
+                    connection.commit_calls = 0
+                    connection.rollback_calls = 0
+                    connection.close_calls = 0
+                    original_api = (
+                        attach_tag_to_literature
+                        if case == "attach"
+                        else detach_tag_from_literature
+                    )
+                    captured_errors: list[sqlite3.Error] = []
+
+                    def failing_write(
+                        write_connection: sqlite3.Connection,
+                        write_literature_id: int,
+                        write_tag_id: int,
+                    ) -> bool:
+                        try:
+                            return original_api(
+                                write_connection,
+                                write_literature_id,
+                                write_tag_id,
+                            )
+                        except sqlite3.Error as error:
+                            captured_errors.append(error)
+                            raise
+
+                    actions = (
+                        self.tag_attach_actions(
+                            literature_id,
+                            operation_tag_id,
+                        )
+                        if case == "attach"
+                        else self.tag_detach_actions(
+                            literature_id,
+                            operation_tag_id,
+                        )
+                    )
+                    outputs: list[str] = []
+                    with patch.object(
+                        cli_module,
+                        api_name,
+                        side_effect=failing_write,
+                    ) as failed_api:
+                        with self.assertRaises(sqlite3.IntegrityError) as raised:
+                            run_cli(
+                                connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+
+                    failed_api.assert_called_once_with(
+                        connection,
+                        literature_id,
+                        operation_tag_id,
+                    )
+                    self.assertEqual(len(captured_errors), 1)
+                    self.assertIs(raised.exception, captured_errors[0])
+                    self.assertEqual(
+                        self.table_snapshot_for(connection),
+                        before,
+                    )
+                    self.assertEqual(
+                        self.schema_snapshot_for(connection),
+                        schema_before,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            "PRAGMA schema_version"
+                        ).fetchone()[0],
+                        schema_version_before,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            "PRAGMA user_version"
+                        ).fetchone()[0],
+                        user_version_before,
+                    )
+                    self.assertFalse(connection.in_transaction)
+                    self.assertEqual(
+                        connection.execute("SELECT 1").fetchone()[0],
+                        1,
+                    )
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                    self.assertEqual(
+                        outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                        1,
+                    )
+                    self.assertNotIn(success_message, outputs)
+                finally:
+                    if connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
+
+    def test_attach_and_detach_success_output_failure_keeps_committed_change(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "attach",
+                "attach_tag_to_literature",
+                "文献へタグを付与しました。",
+            ),
+            (
+                "detach",
+                "detach_tag_from_literature",
+                "文献からタグを解除しました。",
+            ),
+        )
+
+        for index, (case, api_name, success_message) in enumerate(cases):
+            with self.subTest(case=case):
+                connection, literature_id, target_tag_id, other_tag_id = (
+                    self.create_tracking_tag_fixture(
+                        f"{case}-success-output-{index}"
+                    )
+                )
+                try:
+                    operation_tag_id = (
+                        other_tag_id if case == "attach" else target_tag_id
+                    )
+                    connection.execute("PRAGMA user_version = 105")
+                    before = self.table_snapshot_for(connection)
+                    schema_before = self.schema_snapshot_for(connection)
+                    schema_version_before = connection.execute(
+                        "PRAGMA schema_version"
+                    ).fetchone()[0]
+                    user_version_before = connection.execute(
+                        "PRAGMA user_version"
+                    ).fetchone()[0]
+                    connection.commit_calls = 0
+                    connection.rollback_calls = 0
+                    connection.close_calls = 0
+                    expected = RuntimeError(f"{case} success output failure")
+                    outputs: list[str] = []
+
+                    def output_func(message: str) -> None:
+                        outputs.append(message)
+                        if message == success_message:
+                            raise expected
+
+                    original_api = (
+                        attach_tag_to_literature
+                        if case == "attach"
+                        else detach_tag_from_literature
+                    )
+                    actions = (
+                        self.tag_attach_actions(
+                            literature_id,
+                            operation_tag_id,
+                        )
+                        if case == "attach"
+                        else self.tag_detach_actions(
+                            literature_id,
+                            operation_tag_id,
+                        )
+                    )
+                    with patch.object(
+                        cli_module,
+                        api_name,
+                        wraps=original_api,
+                    ) as write_api:
+                        with self.assertRaises(RuntimeError) as raised:
+                            run_cli(
+                                connection,
+                                input_func=InputFeeder(actions),
+                                output_func=output_func,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    write_api.assert_called_once_with(
+                        connection,
+                        literature_id,
+                        operation_tag_id,
+                    )
+                    after = self.table_snapshot_for(connection)
+                    if case == "attach":
+                        expected_mappings = sorted(
+                            [
+                                *before["literature_tags"],
+                                (literature_id, operation_tag_id),
+                            ]
+                        )
+                    else:
+                        expected_mappings = [
+                            row
+                            for row in before["literature_tags"]
+                            if row != (literature_id, operation_tag_id)
+                        ]
+                    self.assertEqual(
+                        after["literature_tags"],
+                        expected_mappings,
+                    )
+                    self.assertEqual(
+                        after["literature"],
+                        before["literature"],
+                    )
+                    self.assertEqual(after["tags"], before["tags"])
+                    self.assertEqual(
+                        after["usage_history"],
+                        before["usage_history"],
+                    )
+                    self.assertEqual(
+                        self.schema_snapshot_for(connection),
+                        schema_before,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            "PRAGMA schema_version"
+                        ).fetchone()[0],
+                        schema_version_before,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            "PRAGMA user_version"
+                        ).fetchone()[0],
+                        user_version_before,
+                    )
+                    self.assertFalse(connection.in_transaction)
+                    self.assertEqual(
+                        connection.execute("SELECT 1").fetchone()[0],
+                        1,
+                    )
+                    self.assertEqual(connection.commit_calls, 0)
+                    self.assertEqual(connection.rollback_calls, 0)
+                    self.assertEqual(connection.close_calls, 0)
+                    self.assertEqual(outputs.count(success_message), 1)
+                    self.assertNotIn(
+                        cli_module._DATABASE_ERROR_MESSAGE,
+                        outputs,
+                    )
+                    self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+                finally:
+                    if connection.in_transaction:
+                        sqlite3.Connection.rollback(connection)
+                    sqlite3.Connection.close(connection)
 
     def test_tag_list_uses_repository_order_and_preserves_objects_and_db(
         self,

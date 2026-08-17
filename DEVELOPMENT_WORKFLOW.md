@@ -193,9 +193,11 @@ Current sub-step:
     - Includes repository-backed tag listing, creation, and renaming with
       input and transaction safety
   - Step 8C-1B
-    - Status: current sub-step, in progress
+    - Status: completed and pushed
+    - Includes safe repository-backed tag deletion with relationship-impact
+      warnings, two-step confirmation, and transaction protection
   - Step 8C-2
-    - Status: not started
+    - Status: current sub-step, in progress
   - Step 8C-3A
     - Status: not started
   - Step 8C-3B

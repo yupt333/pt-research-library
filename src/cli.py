@@ -1,4 +1,4 @@
-"""Interactive CLI for literature and basic tag management."""
+"""Interactive CLI for literature and tag management."""
 
 import sqlite3
 from collections.abc import Callable, Sequence
@@ -8,14 +8,17 @@ from src.duplicates import DuplicateCandidate, find_duplicate_candidates
 from src.models import Literature, Tag
 from src.repository import (
     add_literature,
+    attach_tag_to_literature,
     create_tag,
     delete_literature,
     delete_tag,
+    detach_tag_from_literature,
     get_literature,
     get_literature_related_counts,
     get_tag,
     list_literature,
     list_tags,
+    list_tags_for_literature,
     rename_tag,
     update_literature,
 )
@@ -163,9 +166,12 @@ _TAG_MANAGEMENT_MENU = """タグ管理
 2. タグ作成
 3. タグ名称変更
 4. タグ削除
+5. 文献別タグ一覧
+6. 文献へタグ付与
+7. 文献からタグ解除
 0. メインメニューに戻る"""
 _INVALID_TAG_MENU_MESSAGE = (
-    "入力エラー: 0、1、2、3、4のいずれかを選択してください。"
+    "入力エラー: 0〜7のいずれかを選択してください。"
 )
 _TAG_CREATE_CONFIRMATION_MENU = """1. このタグを登録する
 0. 登録を中止する"""
@@ -179,6 +185,16 @@ _TAG_RENAME_ACTIVE_TRANSACTION_MESSAGE = (
 )
 _TAG_DELETE_ACTIVE_TRANSACTION_MESSAGE = (
     "アクティブなトランザクション中はタグを削除できません。"
+)
+_TAG_ATTACH_CONFIRMATION_MENU = """1. このタグを文献へ付与する
+0. 中止する"""
+_TAG_DETACH_CONFIRMATION_MENU = """1. このタグを文献から解除する
+0. 中止する"""
+_TAG_ATTACH_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中は文献へタグを付与できません。"
+)
+_TAG_DETACH_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中は文献からタグを解除できません。"
 )
 _DUPLICATE_REASON_LABELS = {
     "doi": "DOI一致",
@@ -984,6 +1000,300 @@ def _run_tag_delete(
     return False
 
 
+def _run_literature_tag_list(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Display one existing literature record's repository-provided tags."""
+    try:
+        raw_literature_id = _read_input(
+            input_func,
+            "文献ID（ASCII数字）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id,
+            "文献ID",
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        literature = get_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if literature is None:
+        output_func("対象文献が見つかりません。")
+        return False
+
+    output_func("文献情報:")
+    output_func(f"文献ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+
+    try:
+        tags = list_tags_for_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if tags is None:
+        output_func("文献情報の確認後に対象文献が存在しなくなりました。")
+        return False
+    if not tags:
+        output_func("この文献にはタグが登録されていません。")
+        return False
+
+    output_func("この文献に付与されているタグ:")
+    for tag in tags:
+        output_func(_format_tag(tag))
+        output_func(_RECORD_SEPARATOR)
+    return False
+
+
+def _run_tag_attach(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Collect and confirm one repository-backed tag attachment."""
+    if connection.in_transaction:
+        output_func(_TAG_ATTACH_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        raw_literature_id = _read_input(
+            input_func,
+            "文献ID（ASCII数字）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id,
+            "文献ID",
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        literature = get_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if literature is None:
+        output_func("対象文献が見つかりません。")
+        return False
+
+    output_func("タグ付与対象の文献:")
+    output_func(f"文献ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+
+    try:
+        raw_tag_id = _read_input(input_func, "タグID（ASCII数字）: ")
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        tag_id = _required_positive_ascii_integer(raw_tag_id, "タグID")
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        tag = get_tag(connection, tag_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if tag is None:
+        output_func("対象タグが見つかりません。")
+        return False
+
+    output_func("文献へのタグ付与内容を確認してください。")
+    output_func(f"文献ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+    output_func(f"タグID: {tag_id}")
+    output_func(f"tag name: {tag.name}")
+    output_func(_TAG_ATTACH_CONFIRMATION_MENU)
+    while True:
+        try:
+            raw_confirmation = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = raw_confirmation.strip()
+        if confirmation == "0":
+            output_func("文献へのタグ付与を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    if connection.in_transaction:
+        output_func(_TAG_ATTACH_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        attached = attach_tag_to_literature(
+            connection,
+            literature_id,
+            tag_id,
+        )
+    except ValueError as error:
+        output_func(f"タグ付与エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if not attached:
+        output_func("このタグは既に対象文献へ付与されています。")
+        return False
+
+    output_func("文献へタグを付与しました。")
+    output_func(f"文献ID: {literature_id}")
+    output_func(f"タグID: {tag_id}")
+    return False
+
+
+def _run_tag_detach(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Collect and confirm removal of one literature-tag relationship."""
+    if connection.in_transaction:
+        output_func(_TAG_DETACH_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        raw_literature_id = _read_input(
+            input_func,
+            "文献ID（ASCII数字）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id,
+            "文献ID",
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        literature = get_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if literature is None:
+        output_func("対象文献が見つかりません。")
+        return False
+
+    output_func("タグ解除対象の文献:")
+    output_func(f"文献ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+
+    try:
+        current_tags = list_tags_for_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if current_tags is None:
+        output_func("文献情報の確認後に対象文献が存在しなくなりました。")
+        return False
+    if not current_tags:
+        output_func("この文献には解除できるタグがありません。")
+        return False
+
+    output_func("現在この文献に付与されているタグ:")
+    for current_tag in current_tags:
+        output_func(_format_tag(current_tag))
+        output_func(_RECORD_SEPARATOR)
+
+    try:
+        raw_tag_id = _read_input(input_func, "タグID（ASCII数字）: ")
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        tag_id = _required_positive_ascii_integer(raw_tag_id, "タグID")
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        tag = get_tag(connection, tag_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if tag is None:
+        output_func("対象タグが見つかりません。")
+        return False
+    if not any(current_tag.id == tag_id for current_tag in current_tags):
+        output_func("このタグは対象文献に付与されていません。")
+        return False
+
+    output_func("文献からのタグ解除内容を確認してください。")
+    output_func(f"文献ID: {literature_id}")
+    output_func(f"title: {literature.title}")
+    output_func(f"タグID: {tag_id}")
+    output_func(f"tag name: {tag.name}")
+    output_func("解除するのは文献とタグの関連付けだけです。")
+    output_func("タグレコード自体は削除されません。")
+    output_func("文献レコード自体は削除されません。")
+    output_func(_TAG_DETACH_CONFIRMATION_MENU)
+    while True:
+        try:
+            raw_confirmation = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = raw_confirmation.strip()
+        if confirmation == "0":
+            output_func("文献からのタグ解除を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    if connection.in_transaction:
+        output_func(_TAG_DETACH_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        detached = detach_tag_from_literature(
+            connection,
+            literature_id,
+            tag_id,
+        )
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if not detached:
+        output_func("確認後に対象のタグ関連付けが存在しなくなりました。")
+        return False
+
+    output_func("文献からタグを解除しました。")
+    output_func(f"文献ID: {literature_id}")
+    output_func(f"タグID: {tag_id}")
+    return False
+
+
 def _run_tag_management(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
@@ -1000,7 +1310,7 @@ def _run_tag_management(
 
         if choice == "0":
             return False
-        if choice not in {"1", "2", "3", "4"}:
+        if choice not in {"1", "2", "3", "4", "5", "6", "7"}:
             output_func(_INVALID_TAG_MENU_MESSAGE)
             continue
 
@@ -1024,6 +1334,24 @@ def _run_tag_management(
         ):
             return True
         elif choice == "4" and _run_tag_delete(
+            connection,
+            input_func,
+            output_func,
+        ):
+            return True
+        elif choice == "5" and _run_literature_tag_list(
+            connection,
+            input_func,
+            output_func,
+        ):
+            return True
+        elif choice == "6" and _run_tag_attach(
+            connection,
+            input_func,
+            output_func,
+        ):
+            return True
+        elif choice == "7" and _run_tag_detach(
             connection,
             input_func,
             output_func,
