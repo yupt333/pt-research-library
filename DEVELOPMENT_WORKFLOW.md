@@ -212,9 +212,11 @@ Current sub-step:
 - Step 8D: CLI completion
   - Status: in progress
   - Step 8D-1: dedicated literature detail
-    - Status: current sub-step, in progress
+    - Status: completed and pushed
+    - Includes complete literature detail display with tags, usage history,
+      input safety, and read-only transaction preservation
   - Step 8D-2: connect CSV export to CLI
-    - Status: not started
+    - Status: current sub-step, in progress
   - Step 8D-3: connect SQLite backup to CLI
     - Status: not started
   - Step 8D-4: DB initialization/default path/entrypoint

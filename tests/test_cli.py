@@ -1,5 +1,7 @@
 """Tests for the Step 8 interactive CLI."""
 
+import codecs
+import csv
 import sqlite3
 import tempfile
 import unittest
@@ -138,6 +140,7 @@ class CliTestCase(unittest.TestCase):
         actions: list[object],
         *,
         connection: sqlite3.Connection | None = None,
+        export_directory: object | None = None,
     ) -> tuple[object, InputFeeder, list[str]]:
         feeder = InputFeeder(actions)
         outputs: list[str] = []
@@ -145,6 +148,11 @@ class CliTestCase(unittest.TestCase):
             self.connection if connection is None else connection,
             input_func=feeder,
             output_func=outputs.append,
+            export_directory=(
+                self.directory
+                if export_directory is None
+                else export_directory
+            ),
         )
         return result, feeder, outputs
 
@@ -715,6 +723,8 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("6. タグ管理", outputs[0])
         self.assertIn("7. 使用履歴管理", outputs[0])
         self.assertIn("8. 文献詳細", outputs[0])
+        self.assertIn("9. CSV出力", outputs[0])
+        self.assertNotIn("10. ", outputs[0])
         self.assertIn("0. 終了", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
@@ -731,12 +741,13 @@ class CliTestCase(unittest.TestCase):
 
     def test_invalid_empty_and_many_choices_loop_without_recursion(self) -> None:
         invalid_count = 1200
-        actions = ["", "invalid", *(["9"] * invalid_count), "0"]
+        actions = ["", "invalid", *(["10"] * invalid_count), "0"]
 
         _, feeder, outputs = self.run_with_actions(actions)
 
         error_message = (
-            "入力エラー: 0、1、2、3、4、5、6、7、8のいずれかを選択してください。"
+            "入力エラー: "
+            "0、1、2、3、4、5、6、7、8、9のいずれかを選択してください。"
         )
         self.assertEqual(
             outputs.count(error_message),
@@ -10593,7 +10604,7 @@ class CliTestCase(unittest.TestCase):
         invalid_count = 1200
         feeder = InputFeeder(
             [
-                "9",
+                "10",
                 "7",
                 "5",
                 "invalid",
@@ -12657,11 +12668,569 @@ class CliTestCase(unittest.TestCase):
                     self.assertEqual(self.table_snapshot(), before)
                     self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
 
-    def test_literature_detail_main_menu_zero_through_nine_contract(
+    def test_csv_submenu_contract_default_path_and_unset_search(self) -> None:
+        feeder = InputFeeder(["9", "3", "2", "1", "0", "10", "0"])
+        outputs: list[str] = []
+
+        with patch.object(
+            cli_module,
+            "export_literature_csv",
+            return_value=2,
+        ) as exported:
+            result = run_cli(
+                self.connection,
+                input_func=feeder,
+                output_func=outputs.append,
+            )
+
+        self.assertIsNone(result)
+        self.assertIn("1. 全文献を出力", cli_module._CSV_EXPORT_MENU)
+        self.assertIn(
+            "2. 直前の検索結果を出力",
+            cli_module._CSV_EXPORT_MENU,
+        )
+        self.assertIn(
+            "0. メインメニューに戻る",
+            cli_module._CSV_EXPORT_MENU,
+        )
+        self.assertNotIn("3. ", cli_module._CSV_EXPORT_MENU)
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_CSV_EXPORT_MENU_MESSAGE),
+            1,
+        )
+        self.assertEqual(
+            outputs.count(cli_module._MISSING_SEARCH_RESULTS_MESSAGE),
+            1,
+        )
+        exported.assert_called_once_with(
+            self.connection,
+            Path("exports") / "literature_all.csv",
+            literature_ids=None,
+        )
+        self.assertIn("CSVを出力しました。", outputs)
+        self.assertIn("件数: 2", outputs)
+        self.assertIn("出力先: exports/literature_all.csv", outputs)
+        self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 1)
+        self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+
+    def test_csv_export_all_integration_content_and_messages(self) -> None:
+        first_id = self.add_record("全文献CSV一件目")
+        second_id = self.add_record("全文献CSV二件目")
+        first_tag_id = create_tag(self.connection, "AHD")
+        second_tag_id = create_tag(self.connection, "ultrasound")
+        attach_tag_to_literature(self.connection, first_id, first_tag_id)
+        attach_tag_to_literature(self.connection, first_id, second_tag_id)
+        create_usage_history(
+            self.connection,
+            first_id,
+            "csv-usage-marker",
+        )
+        output_path = self.directory / "literature_all.csv"
+
+        with patch.object(
+            cli_module,
+            "export_literature_csv",
+            wraps=cli_module.export_literature_csv,
+        ) as exported:
+            _, _, outputs = self.run_with_actions(["9", "1", "0", "0"])
+
+        exported.assert_called_once_with(
+            self.connection,
+            output_path,
+            literature_ids=None,
+        )
+        self.assertTrue(output_path.read_bytes().startswith(codecs.BOM_UTF8))
+        with output_path.open("r", encoding="utf-8-sig", newline="") as file:
+            reader = csv.DictReader(file)
+            rows = list(reader)
+            fieldnames = reader.fieldnames
+        self.assertEqual([int(row["id"]) for row in rows], [first_id, second_id])
+        self.assertEqual(rows[0]["tags"], "AHD;ultrasound")
+        self.assertEqual(rows[1]["tags"], "")
+        self.assertIsNotNone(fieldnames)
+        assert fieldnames is not None
+        self.assertIn("tags", fieldnames)
+        for excluded_column in (
+            "usage_type",
+            "project_name",
+            "usage_note",
+            "used_at",
+        ):
+            self.assertNotIn(excluded_column, fieldnames)
+        self.assertNotIn("csv-usage-marker", output_path.read_text("utf-8-sig"))
+        self.assertIn("CSVを出力しました。", outputs)
+        self.assertIn("件数: 2", outputs)
+        self.assertIn(f"出力先: {output_path}", outputs)
+
+    def test_csv_export_uses_only_last_search_result_ids(self) -> None:
+        first_matching_id = self.add_record("CSV検索対象 alpha")
+        nonmatching_id = self.add_record("無関係な別文献")
+        second_matching_id = self.add_record("CSV検索対象 beta")
+        tag_id = create_tag(self.connection, "search-export-tag")
+        attach_tag_to_literature(
+            self.connection,
+            second_matching_id,
+            tag_id,
+        )
+        actions = [
+            *self.search_actions(keyword="CSV検索対象 ")[:-1],
+            "9",
+            "2",
+            "0",
+            "0",
+        ]
+        output_path = self.directory / "literature_search_results.csv"
+
+        with patch.object(
+            cli_module,
+            "export_literature_csv",
+            wraps=cli_module.export_literature_csv,
+        ) as exported:
+            _, _, outputs = self.run_with_actions(actions)
+
+        exported.assert_called_once_with(
+            self.connection,
+            output_path,
+            literature_ids=(first_matching_id, second_matching_id),
+        )
+        with output_path.open("r", encoding="utf-8-sig", newline="") as file:
+            rows = list(csv.DictReader(file))
+        csv_ids = [int(row["id"]) for row in rows]
+        self.assertEqual(csv_ids, [first_matching_id, second_matching_id])
+        self.assertNotIn(nonmatching_id, csv_ids)
+        self.assertEqual(rows[1]["tags"], "search-export-tag")
+        self.assertIn("件数: 2", outputs)
+
+    def test_zero_result_search_replaces_previous_result_and_exports_header(
+        self,
+    ) -> None:
+        self.add_record("置換前検索対象")
+        actions = [
+            *self.search_actions(keyword="置換前検索対象")[:-1],
+            *self.search_actions(keyword="絶対に一致しない検索語")[:-1],
+            "9",
+            "2",
+            "0",
+            "0",
+        ]
+        output_path = self.directory / "literature_search_results.csv"
+
+        with patch.object(
+            cli_module,
+            "export_literature_csv",
+            wraps=cli_module.export_literature_csv,
+        ) as exported:
+            _, _, outputs = self.run_with_actions(actions)
+
+        exported.assert_called_once_with(
+            self.connection,
+            output_path,
+            literature_ids=(),
+        )
+        with output_path.open("r", encoding="utf-8-sig", newline="") as file:
+            rows = list(csv.reader(file))
+        self.assertEqual(len(rows), 1)
+        self.assertIn("id", rows[0])
+        self.assertIn("tags", rows[0])
+        self.assertIn("件数: 0", outputs)
+
+    def test_invalid_search_preserves_previous_successful_result(self) -> None:
+        matching_id = self.add_record("保持する検索結果")
+        self.add_record("検索結果の対象外")
+        actions = [
+            *self.search_actions(keyword="保持する検索結果")[:-1],
+            *self.search_actions(year="invalid-year")[:-1],
+            *self.search_actions(verification_status="invalid-status")[:-1],
+            "9",
+            "2",
+            "0",
+            "0",
+        ]
+        output_path = self.directory / "literature_search_results.csv"
+
+        with patch.object(
+            cli_module,
+            "export_literature_csv",
+            wraps=cli_module.export_literature_csv,
+        ) as exported:
+            _, _, outputs = self.run_with_actions(actions)
+
+        exported.assert_called_once_with(
+            self.connection,
+            output_path,
+            literature_ids=(matching_id,),
+        )
+        with output_path.open("r", encoding="utf-8-sig", newline="") as file:
+            rows = list(csv.DictReader(file))
+        self.assertEqual([int(row["id"]) for row in rows], [matching_id])
+        self.assertTrue(any(item.startswith("入力エラー: ") for item in outputs))
+
+    def test_unset_search_result_does_not_call_export_or_create_file(
+        self,
+    ) -> None:
+        output_path = self.directory / "literature_search_results.csv"
+
+        with patch.object(
+            cli_module,
+            "export_literature_csv",
+            wraps=cli_module.export_literature_csv,
+        ) as exported:
+            _, _, outputs = self.run_with_actions(["9", "2", "0", "0"])
+
+        exported.assert_not_called()
+        self.assertFalse(output_path.exists())
+        self.assertIn(cli_module._MISSING_SEARCH_RESULTS_MESSAGE, outputs)
+
+    def test_deleted_search_result_preserves_existing_csv_on_export_error(
+        self,
+    ) -> None:
+        literature_id = self.add_record("検索後削除対象")
+        self.add_record("検索対象外の保持文献")
+        output_path = self.directory / "literature_search_results.csv"
+        marker = b"existing-csv-marker"
+        output_path.write_bytes(marker)
+        actions = [
+            *self.search_actions(keyword="検索後削除対象")[:-1],
+            "9",
+            "2",
+            "0",
+            "0",
+        ]
+        feeder = InputFeeder(actions)
+        outputs: list[str] = []
+        deleted = False
+
+        def output_func(message: str) -> None:
+            nonlocal deleted
+            outputs.append(message)
+            if not deleted and "title: 検索後削除対象" in message:
+                deleted = True
+                self.assertTrue(delete_literature(self.connection, literature_id))
+
+        with patch.object(
+            cli_module,
+            "export_literature_csv",
+            wraps=cli_module.export_literature_csv,
+        ) as exported:
+            result = run_cli(
+                self.connection,
+                input_func=feeder,
+                output_func=output_func,
+                export_directory=self.directory,
+            )
+
+        self.assertIsNone(result)
+        self.assertTrue(deleted)
+        exported.assert_called_once_with(
+            self.connection,
+            output_path,
+            literature_ids=(literature_id,),
+        )
+        self.assertEqual(output_path.read_bytes(), marker)
+        self.assertTrue(
+            any(item.startswith("CSV出力エラー: ") for item in outputs)
+        )
+        self.assertEqual(
+            list(self.directory.glob(f".{output_path.name}.*.tmp")),
+            [],
+        )
+        self.assertEqual(list(self.directory.glob("*.csv")), [output_path])
+
+    def test_missing_export_directory_is_not_created(self) -> None:
+        missing_directory = self.directory / "missing-exports"
+
+        _, _, outputs = self.run_with_actions(
+            ["9", "1", "0", "0"],
+            export_directory=missing_directory,
+        )
+
+        self.assertFalse(missing_directory.exists())
+        self.assertTrue(
+            any(item.startswith("CSV出力エラー: ") for item in outputs)
+        )
+
+    def test_csv_export_api_exception_boundaries(self) -> None:
+        for expected in (
+            ValueError("csv value failure"),
+            OSError("csv filesystem failure"),
+        ):
+            with self.subTest(expected=type(expected).__name__):
+                with patch.object(
+                    cli_module,
+                    "export_literature_csv",
+                    side_effect=expected,
+                ) as exported:
+                    _, _, outputs = self.run_with_actions(["9", "1", "0", "0"])
+
+                exported.assert_called_once()
+                self.assertIn(f"CSV出力エラー: {expected}", outputs)
+                self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
+        database_error = sqlite3.OperationalError("csv database failure")
+        outputs: list[str] = []
+        with (
+            patch.object(
+                cli_module,
+                "export_literature_csv",
+                side_effect=database_error,
+            ) as exported,
+            self.assertRaises(sqlite3.OperationalError) as raised,
+        ):
+            run_cli(
+                self.connection,
+                input_func=InputFeeder(["9", "1"]),
+                output_func=outputs.append,
+                export_directory=self.directory,
+            )
+        self.assertIs(raised.exception, database_error)
+        exported.assert_called_once()
+        self.assertEqual(outputs.count(cli_module._DATABASE_ERROR_MESSAGE), 1)
+        self.assertFalse(any(item.startswith("CSV出力エラー: ") for item in outputs))
+
+        unexpected = RuntimeError("unexpected csv failure")
+        outputs = []
+        with (
+            patch.object(
+                cli_module,
+                "export_literature_csv",
+                side_effect=unexpected,
+            ) as exported,
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            run_cli(
+                self.connection,
+                input_func=InputFeeder(["9", "1"]),
+                output_func=outputs.append,
+                export_directory=self.directory,
+            )
+        self.assertIs(raised.exception, unexpected)
+        exported.assert_called_once()
+        self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+        self.assertFalse(any(item.startswith("CSV出力エラー: ") for item in outputs))
+
+    def test_csv_submenu_input_and_pre_export_output_exceptions(self) -> None:
+        for interruption in (EOFError("csv eof"), KeyboardInterrupt()):
+            with self.subTest(interruption=type(interruption).__name__):
+                with patch.object(cli_module, "export_literature_csv") as exported:
+                    _, _, outputs = self.run_with_actions(["9", interruption])
+                exported.assert_not_called()
+                self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+
+        for expected in (
+            ValueError("csv input value failure"),
+            sqlite3.OperationalError("csv input sqlite failure"),
+        ):
+            with self.subTest(expected=type(expected).__name__):
+                outputs: list[str] = []
+                with (
+                    patch.object(cli_module, "export_literature_csv") as exported,
+                    self.assertRaises(type(expected)) as raised,
+                ):
+                    run_cli(
+                        self.connection,
+                        input_func=InputFeeder(["9", expected]),
+                        output_func=outputs.append,
+                        export_directory=self.directory,
+                    )
+                self.assertIs(raised.exception, expected)
+                exported.assert_not_called()
+                self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
+        expected = RuntimeError("csv menu output failure")
+        outputs = []
+
+        def output_func(message: str) -> None:
+            outputs.append(message)
+            if message == cli_module._CSV_EXPORT_MENU:
+                raise expected
+
+        with (
+            patch.object(cli_module, "export_literature_csv") as exported,
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            run_cli(
+                self.connection,
+                input_func=InputFeeder(["9"]),
+                output_func=output_func,
+                export_directory=self.directory,
+            )
+        self.assertIs(raised.exception, expected)
+        exported.assert_not_called()
+        self.assertEqual(outputs.count(cli_module._CSV_EXPORT_MENU), 1)
+
+    def test_csv_success_output_failure_keeps_file_without_retry_or_db_change(
+        self,
+    ) -> None:
+        database_path = self.directory / "csv-output-failure.db"
+        initialize_database(database_path)
+        connection = sqlite3.connect(database_path, factory=TrackingConnection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        try:
+            literature_id = add_literature(
+                connection,
+                Literature(title="CSV output failure target"),
+            )
+            tag_id = create_tag(connection, "csv-output-tag")
+            attach_tag_to_literature(connection, literature_id, tag_id)
+            create_usage_history(connection, literature_id, "csv-output-use")
+            tables_before = self.table_snapshot_for(connection)
+            schema_before = self.schema_snapshot_for(connection)
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            output_path = self.directory / "literature_all.csv"
+            expected = RuntimeError("csv success output failure")
+            outputs: list[str] = []
+
+            def output_func(message: str) -> None:
+                outputs.append(message)
+                if message == "CSVを出力しました。":
+                    raise expected
+
+            with (
+                patch.object(
+                    cli_module,
+                    "export_literature_csv",
+                    wraps=cli_module.export_literature_csv,
+                ) as exported,
+                self.assertRaises(RuntimeError) as raised,
+            ):
+                run_cli(
+                    connection,
+                    input_func=InputFeeder(["9", "1"]),
+                    output_func=output_func,
+                    export_directory=self.directory,
+                )
+
+            self.assertIs(raised.exception, expected)
+            exported.assert_called_once_with(
+                connection,
+                output_path,
+                literature_ids=None,
+            )
+            self.assertTrue(output_path.is_file())
+            with output_path.open("r", encoding="utf-8-sig", newline="") as file:
+                rows = list(csv.DictReader(file))
+            self.assertEqual([int(row["id"]) for row in rows], [literature_id])
+            self.assertEqual(self.table_snapshot_for(connection), tables_before)
+            self.assertEqual(self.schema_snapshot_for(connection), schema_before)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_csv_export_preserves_active_transaction_and_database_state(
+        self,
+    ) -> None:
+        database_path = self.directory / "csv-active-transaction.db"
+        initialize_database(database_path)
+        connection = sqlite3.connect(database_path, factory=TrackingConnection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        try:
+            committed_id = add_literature(
+                connection,
+                Literature(title="CSV committed literature"),
+            )
+            committed_tag_id = create_tag(connection, "csv-committed-tag")
+            attach_tag_to_literature(
+                connection,
+                committed_id,
+                committed_tag_id,
+            )
+            create_usage_history(connection, committed_id, "csv-committed-use")
+            connection.execute("PRAGMA user_version = 802")
+            sqlite3.Connection.commit(connection)
+
+            pending_cursor = connection.execute(
+                "INSERT INTO literature (title) VALUES (?)",
+                ("CSV pending marker",),
+            )
+            pending_id = pending_cursor.lastrowid
+            pending_tag_cursor = connection.execute(
+                "INSERT INTO tags (name) VALUES (?)",
+                ("csv-pending-tag",),
+            )
+            pending_tag_id = pending_tag_cursor.lastrowid
+            connection.execute(
+                "INSERT INTO literature_tags (literature_id, tag_id) VALUES (?, ?)",
+                (pending_id, pending_tag_id),
+            )
+            connection.execute(
+                "INSERT INTO usage_history (literature_id, usage_type) VALUES (?, ?)",
+                (pending_id, "csv-pending-use"),
+            )
+            self.assertTrue(connection.in_transaction)
+            tables_before = self.table_snapshot_for(connection)
+            schema_before = self.schema_snapshot_for(connection)
+            schema_version_before = connection.execute(
+                "PRAGMA schema_version"
+            ).fetchone()[0]
+            user_version_before = connection.execute(
+                "PRAGMA user_version"
+            ).fetchone()[0]
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+
+            _, _, outputs = self.run_with_actions(
+                ["9", "1", "0", "0"],
+                connection=connection,
+            )
+
+            output_path = self.directory / "literature_all.csv"
+            with output_path.open("r", encoding="utf-8-sig", newline="") as file:
+                rows = list(csv.DictReader(file))
+            self.assertEqual(
+                [int(row["id"]) for row in rows],
+                [committed_id, pending_id],
+            )
+            self.assertIn("件数: 2", outputs)
+            self.assertEqual(self.table_snapshot_for(connection), tables_before)
+            self.assertEqual(self.schema_snapshot_for(connection), schema_before)
+            self.assertEqual(
+                connection.execute("PRAGMA schema_version").fetchone()[0],
+                schema_version_before,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                user_version_before,
+            )
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+
+            sqlite3.Connection.rollback(connection)
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM literature WHERE id = ?",
+                    (pending_id,),
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (pending_tag_id,),
+                ).fetchone()[0],
+                0,
+            )
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_literature_detail_main_menu_zero_through_ten_contract(
         self,
     ) -> None:
         feeder = InputFeeder(
-            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "0"]
         )
         outputs: list[str] = []
 
@@ -12694,6 +13263,11 @@ class CliTestCase(unittest.TestCase):
                 "_run_literature_detail",
                 return_value=False,
             ) as detailed,
+            patch.object(
+                cli_module,
+                "_run_csv_export",
+                return_value=False,
+            ) as csv_exported,
         ):
             result = run_cli(
                 self.connection,
@@ -12711,12 +13285,13 @@ class CliTestCase(unittest.TestCase):
             "6. タグ管理",
             "7. 使用履歴管理",
             "8. 文献詳細",
+            "9. CSV出力",
             "0. 終了",
         )
         for option in expected_options:
             with self.subTest(option=option):
                 self.assertIn(option, outputs[0])
-        self.assertNotIn("9. ", outputs[0])
+        self.assertNotIn("10. ", outputs[0])
         listed.assert_called_once_with(self.connection)
         for flow in (
             searched,
@@ -12732,6 +13307,13 @@ class CliTestCase(unittest.TestCase):
                 feeder,
                 outputs.append,
             )
+        csv_exported.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+            "exports",
+            None,
+        )
         self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 1)
         self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
 

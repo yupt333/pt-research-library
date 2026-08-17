@@ -2,8 +2,10 @@
 
 import sqlite3
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Optional
 
+from src.csv_export import export_literature_csv
 from src.duplicates import DuplicateCandidate, find_duplicate_candidates
 from src.models import Literature, Tag, UsageHistory
 from src.repository import (
@@ -40,10 +42,11 @@ _MAIN_MENU = """理学療法文献ライブラリ
 6. タグ管理
 7. 使用履歴管理
 8. 文献詳細
+9. CSV出力
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
 _INVALID_MENU_MESSAGE = (
-    "入力エラー: 0、1、2、3、4、5、6、7、8のいずれかを選択してください。"
+    "入力エラー: 0、1、2、3、4、5、6、7、8、9のいずれかを選択してください。"
 )
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
@@ -51,6 +54,21 @@ _RECORD_SEPARATOR = "-" * 40
 _AI_SUMMARY_STATUSES = ("未作成", "未確認", "確認済み", "修正済み")
 _VERIFICATION_STATUSES = ("未確認", "一部確認", "確認済み", "要確認")
 _ADOPTION_STATUSES = ("未判定", "採用候補", "採用", "除外")
+
+_CSV_EXPORT_MENU = """CSV出力
+
+1. 全文献を出力
+2. 直前の検索結果を出力
+0. メインメニューに戻る"""
+_INVALID_CSV_EXPORT_MENU_MESSAGE = (
+    "入力エラー: 0、1、2のいずれかを選択してください。"
+)
+_MISSING_SEARCH_RESULTS_MESSAGE = (
+    "出力できる検索結果がありません。"
+    "先に文献検索を実行してください。"
+)
+_ALL_LITERATURE_CSV_FILENAME = "literature_all.csv"
+_SEARCH_RESULTS_CSV_FILENAME = "literature_search_results.csv"
 
 _SEARCH_PROMPTS = (
     ("keyword", "キーワード（空欄で指定なし）: "),
@@ -1880,7 +1898,7 @@ def _run_search(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
     output_func: Callable[[str], object],
-) -> bool:
+) -> bool | tuple[int, ...]:
     """Collect all Step 8A filters, execute the existing search, and display it."""
     raw_values: dict[str, str] = {}
     for field_name, prompt in _SEARCH_PROMPTS:
@@ -1931,7 +1949,61 @@ def _run_search(
         output_func,
         empty_message="条件に一致する文献はありません。",
     )
-    return False
+    return tuple(result.id for result in results)
+
+
+def _run_csv_export(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+    export_directory: object,
+    search_result_ids: Optional[tuple[int, ...]],
+) -> bool:
+    """Export all literature or the last successful search without recursion."""
+    while True:
+        output_func(_CSV_EXPORT_MENU)
+        try:
+            raw_choice = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        choice = raw_choice.strip()
+
+        if choice == "0":
+            return False
+        if choice not in {"1", "2"}:
+            output_func(_INVALID_CSV_EXPORT_MENU_MESSAGE)
+            continue
+
+        if choice == "1":
+            output_path = (
+                Path(export_directory) / _ALL_LITERATURE_CSV_FILENAME
+            )
+            literature_ids: object = None
+        else:
+            if search_result_ids is None:
+                output_func(_MISSING_SEARCH_RESULTS_MESSAGE)
+                continue
+            output_path = (
+                Path(export_directory) / _SEARCH_RESULTS_CSV_FILENAME
+            )
+            literature_ids = search_result_ids
+
+        try:
+            row_count = export_literature_csv(
+                connection,
+                output_path,
+                literature_ids=literature_ids,
+            )
+        except (ValueError, OSError) as error:
+            output_func(f"CSV出力エラー: {error}")
+            continue
+        except sqlite3.Error:
+            output_func(_DATABASE_ERROR_MESSAGE)
+            raise
+
+        output_func("CSVを出力しました。")
+        output_func(f"件数: {row_count}")
+        output_func(f"出力先: {output_path}")
 
 
 def _run_literature_detail(
@@ -2015,8 +2087,10 @@ def run_cli(
     *,
     input_func: Callable[[str], str] = input,
     output_func: Callable[[str], object] = print,
+    export_directory: object = "exports",
 ) -> None:
     """Run the interactive menu using an existing SQLite connection."""
+    last_search_result_ids: Optional[tuple[int, ...]] = None
     while True:
         output_func(_MAIN_MENU)
         try:
@@ -2029,7 +2103,7 @@ def run_cli(
         if choice == "0":
             output_func(_EXIT_MESSAGE)
             return None
-        if choice not in {"1", "2", "3", "4", "5", "6", "7", "8"}:
+        if choice not in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
             output_func(_INVALID_MENU_MESSAGE)
             continue
 
@@ -2044,13 +2118,17 @@ def run_cli(
                 output_func,
                 empty_message="登録されている文献はありません。",
             )
-        elif choice == "2" and _run_search(
-            connection,
-            input_func,
-            output_func,
-        ):
-            output_func(_EXIT_MESSAGE)
-            return None
+        elif choice == "2":
+            search_outcome = _run_search(
+                connection,
+                input_func,
+                output_func,
+            )
+            if search_outcome is True:
+                output_func(_EXIT_MESSAGE)
+                return None
+            if isinstance(search_outcome, tuple):
+                last_search_result_ids = search_outcome
         elif choice == "3" and _run_registration(
             connection,
             input_func,
@@ -2090,6 +2168,15 @@ def run_cli(
             connection,
             input_func,
             output_func,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None
+        elif choice == "9" and _run_csv_export(
+            connection,
+            input_func,
+            output_func,
+            export_directory,
+            last_search_result_ids,
         ):
             output_func(_EXIT_MESSAGE)
             return None
