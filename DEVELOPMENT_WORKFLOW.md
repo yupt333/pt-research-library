@@ -216,9 +216,11 @@ Current sub-step:
     - Includes complete literature detail display with tags, usage history,
       input safety, and read-only transaction preservation
   - Step 8D-2: connect CSV export to CLI
-    - Status: current sub-step, in progress
+    - Status: completed and pushed
+    - Includes all-literature and last-search-result CSV export with fixed
+      default paths, input safety, and read-only transaction preservation
   - Step 8D-3: connect SQLite backup to CLI
-    - Status: not started
+    - Status: current sub-step, in progress
   - Step 8D-4: DB initialization/default path/entrypoint
     - Status: not started
   - Step 8D-5: overall CLI integration/display/usability cleanup

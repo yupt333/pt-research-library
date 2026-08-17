@@ -5,6 +5,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Optional
 
+from src.backup import create_database_backup
 from src.csv_export import export_literature_csv
 from src.duplicates import DuplicateCandidate, find_duplicate_candidates
 from src.models import Literature, Tag, UsageHistory
@@ -43,10 +44,12 @@ _MAIN_MENU = """理学療法文献ライブラリ
 7. 使用履歴管理
 8. 文献詳細
 9. CSV出力
+10. SQLiteバックアップ
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
 _INVALID_MENU_MESSAGE = (
-    "入力エラー: 0、1、2、3、4、5、6、7、8、9のいずれかを選択してください。"
+    "入力エラー: "
+    "0、1、2、3、4、5、6、7、8、9、10のいずれかを選択してください。"
 )
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
@@ -2006,6 +2009,29 @@ def _run_csv_export(
         output_func(f"出力先: {output_path}")
 
 
+def _run_database_backup(
+    connection: sqlite3.Connection,
+    output_func: Callable[[str], object],
+    backup_directory: object,
+) -> None:
+    """Create one backup through the existing core API."""
+    try:
+        backup_path = create_database_backup(
+            connection,
+            backup_directory,
+        )
+    except (ValueError, OSError) as error:
+        output_func(f"バックアップエラー: {error}")
+        return None
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    output_func("データベースをバックアップしました。")
+    output_func(f"保存先: {backup_path}")
+    return None
+
+
 def _run_literature_detail(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
@@ -2088,6 +2114,7 @@ def run_cli(
     input_func: Callable[[str], str] = input,
     output_func: Callable[[str], object] = print,
     export_directory: object = "exports",
+    backup_directory: object = "backups",
 ) -> None:
     """Run the interactive menu using an existing SQLite connection."""
     last_search_result_ids: Optional[tuple[int, ...]] = None
@@ -2103,7 +2130,18 @@ def run_cli(
         if choice == "0":
             output_func(_EXIT_MESSAGE)
             return None
-        if choice not in {"1", "2", "3", "4", "5", "6", "7", "8", "9"}:
+        if choice not in {
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+        }:
             output_func(_INVALID_MENU_MESSAGE)
             continue
 
@@ -2180,3 +2218,9 @@ def run_cli(
         ):
             output_func(_EXIT_MESSAGE)
             return None
+        elif choice == "10":
+            _run_database_backup(
+                connection,
+                output_func,
+                backup_directory,
+            )

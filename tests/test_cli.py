@@ -125,6 +125,29 @@ class TrackingConnection(sqlite3.Connection):
         super().close()
 
 
+class FailingBackupConnection(TrackingConnection):
+    """Fail source backup while recording retries and lifecycle calls."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.backup_calls = 0
+        self.backup_error = sqlite3.OperationalError(
+            "forced CLI backup failure"
+        )
+
+    def backup(
+        self,
+        target: sqlite3.Connection,
+        *,
+        pages: int = -1,
+        progress=None,
+        name: str = "main",
+        sleep: float = 0.250,
+    ) -> None:
+        self.backup_calls += 1
+        raise self.backup_error
+
+
 class CliTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -141,6 +164,7 @@ class CliTestCase(unittest.TestCase):
         *,
         connection: sqlite3.Connection | None = None,
         export_directory: object | None = None,
+        backup_directory: object | None = None,
     ) -> tuple[object, InputFeeder, list[str]]:
         feeder = InputFeeder(actions)
         outputs: list[str] = []
@@ -152,6 +176,11 @@ class CliTestCase(unittest.TestCase):
                 self.directory
                 if export_directory is None
                 else export_directory
+            ),
+            backup_directory=(
+                self.directory
+                if backup_directory is None
+                else backup_directory
             ),
         )
         return result, feeder, outputs
@@ -724,7 +753,8 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("7. 使用履歴管理", outputs[0])
         self.assertIn("8. 文献詳細", outputs[0])
         self.assertIn("9. CSV出力", outputs[0])
-        self.assertNotIn("10. ", outputs[0])
+        self.assertIn("10. SQLiteバックアップ", outputs[0])
+        self.assertNotIn("11. ", outputs[0])
         self.assertIn("0. 終了", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
@@ -741,13 +771,13 @@ class CliTestCase(unittest.TestCase):
 
     def test_invalid_empty_and_many_choices_loop_without_recursion(self) -> None:
         invalid_count = 1200
-        actions = ["", "invalid", *(["10"] * invalid_count), "0"]
+        actions = ["", "invalid", *(["11"] * invalid_count), "0"]
 
         _, feeder, outputs = self.run_with_actions(actions)
 
         error_message = (
             "入力エラー: "
-            "0、1、2、3、4、5、6、7、8、9のいずれかを選択してください。"
+            "0、1、2、3、4、5、6、7、8、9、10のいずれかを選択してください。"
         )
         self.assertEqual(
             outputs.count(error_message),
@@ -3218,7 +3248,19 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("7. 使用履歴管理", outputs[0])
         self.assertIn("8. 文献詳細", outputs[0])
         self.assertIn(cli_module._INVALID_MENU_MESSAGE, outputs)
-        for choice in ("0", "1", "2", "3", "4", "5", "6", "7", "8"):
+        for choice in (
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+        ):
             with self.subTest(choice=choice):
                 self.assertIn(choice, cli_module._INVALID_MENU_MESSAGE)
 
@@ -10604,7 +10646,7 @@ class CliTestCase(unittest.TestCase):
         invalid_count = 1200
         feeder = InputFeeder(
             [
-                "10",
+                "11",
                 "7",
                 "5",
                 "invalid",
@@ -12669,7 +12711,7 @@ class CliTestCase(unittest.TestCase):
                     self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
 
     def test_csv_submenu_contract_default_path_and_unset_search(self) -> None:
-        feeder = InputFeeder(["9", "3", "2", "1", "0", "10", "0"])
+        feeder = InputFeeder(["9", "3", "2", "1", "0", "11", "0"])
         outputs: list[str] = []
 
         with patch.object(
@@ -13226,11 +13268,499 @@ class CliTestCase(unittest.TestCase):
                 sqlite3.Connection.rollback(connection)
             sqlite3.Connection.close(connection)
 
-    def test_literature_detail_main_menu_zero_through_ten_contract(
+    def test_backup_default_directory_and_returned_path_are_used(self) -> None:
+        backup_path = Path("backups") / "core-returned-backup.sqlite3"
+        outputs: list[str] = []
+
+        with patch.object(
+            cli_module,
+            "create_database_backup",
+            return_value=backup_path,
+        ) as backed_up:
+            result = run_cli(
+                self.connection,
+                input_func=InputFeeder(["10", "0"]),
+                output_func=outputs.append,
+            )
+
+        self.assertIsNone(result)
+        backed_up.assert_called_once_with(self.connection, "backups")
+        self.assertIn("データベースをバックアップしました。", outputs)
+        self.assertIn(f"保存先: {backup_path}", outputs)
+
+    def test_backup_success_integrates_content_and_preserves_source(self) -> None:
+        database_path = self.directory / "backup-success-source.db"
+        backup_directory = self.directory / "backup-success-output"
+        backup_directory.mkdir()
+        initialize_database(database_path)
+        connection = sqlite3.connect(database_path, factory=TrackingConnection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        try:
+            first_id = add_literature(
+                connection,
+                Literature(title="Backup integration first", rating=5),
+            )
+            second_id = add_literature(
+                connection,
+                Literature(title="Backup integration second"),
+            )
+            first_tag_id = create_tag(connection, "backup-alpha")
+            second_tag_id = create_tag(connection, "backup-beta")
+            attach_tag_to_literature(connection, first_id, first_tag_id)
+            attach_tag_to_literature(connection, first_id, second_tag_id)
+            attach_tag_to_literature(connection, second_id, first_tag_id)
+            create_usage_history(
+                connection,
+                first_id,
+                "backup-use",
+                project_name="Backup integration project",
+            )
+            create_usage_history(connection, second_id, "backup-other-use")
+            connection.execute("PRAGMA user_version = 803")
+            sqlite3.Connection.commit(connection)
+            tables_before = self.table_snapshot_for(connection)
+            schema_before = self.schema_snapshot_for(connection)
+            schema_version_before = connection.execute(
+                "PRAGMA schema_version"
+            ).fetchone()[0]
+            user_version_before = connection.execute(
+                "PRAGMA user_version"
+            ).fetchone()[0]
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+
+            with patch.object(
+                cli_module,
+                "create_database_backup",
+                wraps=cli_module.create_database_backup,
+            ) as backed_up:
+                _, _, outputs = self.run_with_actions(
+                    ["10", "0"],
+                    connection=connection,
+                    backup_directory=backup_directory,
+                )
+
+            backed_up.assert_called_once_with(connection, backup_directory)
+            backup_files = list(backup_directory.glob("*.sqlite3"))
+            self.assertEqual(len(backup_files), 1)
+            backup_path = backup_files[0]
+            self.assertIn(f"保存先: {backup_path}", outputs)
+            backup_connection = sqlite3.connect(backup_path)
+            backup_connection.row_factory = sqlite3.Row
+            try:
+                self.assertEqual(
+                    backup_connection.execute(
+                        "PRAGMA quick_check"
+                    ).fetchone()[0],
+                    "ok",
+                )
+                self.assertEqual(
+                    self.table_snapshot_for(backup_connection),
+                    tables_before,
+                )
+                self.assertEqual(
+                    self.schema_snapshot_for(backup_connection),
+                    schema_before,
+                )
+                self.assertEqual(
+                    backup_connection.execute(
+                        "PRAGMA user_version"
+                    ).fetchone()[0],
+                    user_version_before,
+                )
+            finally:
+                backup_connection.close()
+
+            self.assertEqual(self.table_snapshot_for(connection), tables_before)
+            self.assertEqual(self.schema_snapshot_for(connection), schema_before)
+            self.assertEqual(
+                connection.execute("PRAGMA schema_version").fetchone()[0],
+                schema_version_before,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                user_version_before,
+            )
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(
+                list(
+                    backup_directory.glob(
+                        ".pt_research_library_backup_in_progress_*"
+                    )
+                ),
+                [],
+            )
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_two_cli_backups_are_distinct_valid_and_preserve_source(self) -> None:
+        self.add_record("Two CLI backups source")
+        backup_directory = self.directory / "two-cli-backups"
+        backup_directory.mkdir()
+        tables_before = self.table_snapshot()
+        schema_before = self.schema_snapshot()
+        create_backup = cli_module.create_database_backup
+        first_backup_state: dict[str, object] = {}
+
+        def create_and_track_backup(
+            connection: sqlite3.Connection,
+            directory: object,
+        ) -> Path:
+            backup_path = create_backup(connection, directory)
+            if not first_backup_state:
+                first_backup_state.update(
+                    path=backup_path,
+                    inode=backup_path.stat().st_ino,
+                    contents=backup_path.read_bytes(),
+                )
+            else:
+                first_path = first_backup_state["path"]
+                assert isinstance(first_path, Path)
+                self.assertTrue(first_path.is_file())
+                self.assertEqual(
+                    first_path.stat().st_ino,
+                    first_backup_state["inode"],
+                )
+                self.assertEqual(
+                    first_path.read_bytes(),
+                    first_backup_state["contents"],
+                )
+            return backup_path
+
+        with patch.object(
+            cli_module,
+            "create_database_backup",
+            side_effect=create_and_track_backup,
+        ) as backed_up:
+            _, _, outputs = self.run_with_actions(
+                ["10", "10", "0"],
+                backup_directory=backup_directory,
+            )
+
+        self.assertEqual(backed_up.call_count, 2)
+        backup_files = sorted(backup_directory.glob("*.sqlite3"))
+        self.assertEqual(len(backup_files), 2)
+        self.assertNotEqual(backup_files[0], backup_files[1])
+        self.assertEqual(outputs.count("データベースをバックアップしました。"), 2)
+        for backup_path in backup_files:
+            with self.subTest(backup_path=backup_path):
+                backup_connection = sqlite3.connect(backup_path)
+                try:
+                    self.assertEqual(
+                        backup_connection.execute(
+                            "PRAGMA quick_check"
+                        ).fetchone()[0],
+                        "ok",
+                    )
+                finally:
+                    backup_connection.close()
+        self.assertEqual(self.table_snapshot(), tables_before)
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            list(
+                backup_directory.glob(
+                    ".pt_research_library_backup_in_progress_*"
+                )
+            ),
+            [],
+        )
+
+    def test_backup_active_transaction_is_preserved_and_creates_nothing(
+        self,
+    ) -> None:
+        database_path = self.directory / "backup-active-source.db"
+        backup_directory = self.directory / "backup-active-output"
+        backup_directory.mkdir()
+        initialize_database(database_path)
+        connection = sqlite3.connect(database_path, factory=TrackingConnection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        try:
+            add_literature(
+                connection,
+                Literature(title="Backup committed source"),
+            )
+            pending_cursor = connection.execute(
+                "INSERT INTO literature (title) VALUES (?)",
+                ("Backup pending marker",),
+            )
+            pending_id = pending_cursor.lastrowid
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            self.assertTrue(connection.in_transaction)
+
+            with patch.object(
+                cli_module,
+                "create_database_backup",
+                wraps=cli_module.create_database_backup,
+            ) as backed_up:
+                _, _, outputs = self.run_with_actions(
+                    ["10", "0"],
+                    connection=connection,
+                    backup_directory=backup_directory,
+                )
+
+            backed_up.assert_called_once_with(connection, backup_directory)
+            self.assertTrue(
+                any(item.startswith("バックアップエラー: ") for item in outputs)
+            )
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT title FROM literature WHERE id = ?",
+                    (pending_id,),
+                ).fetchone()[0],
+                "Backup pending marker",
+            )
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertEqual(list(backup_directory.iterdir()), [])
+
+            sqlite3.Connection.rollback(connection)
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM literature WHERE id = ?",
+                    (pending_id,),
+                ).fetchone()[0],
+                0,
+            )
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_backup_invalid_directories_are_not_created_or_modified(
+        self,
+    ) -> None:
+        self.add_record("Backup invalid directory source")
+        source_before = self.table_snapshot()
+        schema_before = self.schema_snapshot()
+        missing_directory = self.directory / "missing-backup-directory"
+        file_path = self.directory / "backup-directory-file"
+        file_path.write_text("kept directory marker", encoding="utf-8")
+
+        for backup_directory in (missing_directory, file_path, None):
+            with self.subTest(backup_directory=backup_directory):
+                outputs: list[str] = []
+                result = run_cli(
+                    self.connection,
+                    input_func=InputFeeder(["10", "0"]),
+                    output_func=outputs.append,
+                    export_directory=self.directory,
+                    backup_directory=backup_directory,
+                )
+                self.assertIsNone(result)
+                self.assertTrue(
+                    any(
+                        item.startswith("バックアップエラー: ")
+                        for item in outputs
+                    )
+                )
+
+        self.assertFalse(missing_directory.exists())
+        self.assertEqual(
+            file_path.read_text(encoding="utf-8"),
+            "kept directory marker",
+        )
+        self.assertEqual(self.table_snapshot(), source_before)
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertFalse(
+            any(
+                path.name.startswith("pt_research_library_backup_")
+                or path.name.startswith(
+                    ".pt_research_library_backup_in_progress_"
+                )
+                for path in self.directory.iterdir()
+            )
+        )
+
+    def test_backup_sqlite_error_is_rethrown_once_and_cleans_temporary(
+        self,
+    ) -> None:
+        database_path = self.directory / "backup-failure-source.db"
+        backup_directory = self.directory / "backup-failure-output"
+        backup_directory.mkdir()
+        initialize_database(database_path)
+        connection = sqlite3.connect(
+            database_path,
+            factory=FailingBackupConnection,
+        )
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        connection.commit_calls = 0
+        connection.rollback_calls = 0
+        connection.close_calls = 0
+        outputs: list[str] = []
+        try:
+            with (
+                patch.object(
+                    cli_module,
+                    "create_database_backup",
+                    wraps=cli_module.create_database_backup,
+                ) as backed_up,
+                self.assertRaises(sqlite3.OperationalError) as raised,
+            ):
+                run_cli(
+                    connection,
+                    input_func=InputFeeder(["10"]),
+                    output_func=outputs.append,
+                    export_directory=self.directory,
+                    backup_directory=backup_directory,
+                )
+
+            self.assertIs(raised.exception, connection.backup_error)
+            backed_up.assert_called_once_with(connection, backup_directory)
+            self.assertEqual(connection.backup_calls, 1)
+            self.assertEqual(outputs.count(cli_module._DATABASE_ERROR_MESSAGE), 1)
+            self.assertFalse(
+                any(item.startswith("バックアップエラー: ") for item in outputs)
+            )
+            self.assertEqual(list(backup_directory.iterdir()), [])
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_backup_success_output_failure_keeps_backup_without_retry(
+        self,
+    ) -> None:
+        database_path = self.directory / "backup-output-source.db"
+        backup_directory = self.directory / "backup-output-output"
+        backup_directory.mkdir()
+        initialize_database(database_path)
+        connection = sqlite3.connect(database_path, factory=TrackingConnection)
+        connection.row_factory = sqlite3.Row
+        sqlite3.Connection.execute(connection, "PRAGMA foreign_keys = ON")
+        try:
+            literature_id = add_literature(
+                connection,
+                Literature(title="Backup output failure source"),
+            )
+            source_before = self.table_snapshot_for(connection)
+            schema_before = self.schema_snapshot_for(connection)
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            expected = RuntimeError("backup success output failure")
+            outputs: list[str] = []
+
+            def output_func(message: str) -> None:
+                outputs.append(message)
+                if message == "データベースをバックアップしました。":
+                    raise expected
+
+            with (
+                patch.object(
+                    cli_module,
+                    "create_database_backup",
+                    wraps=cli_module.create_database_backup,
+                ) as backed_up,
+                self.assertRaises(RuntimeError) as raised,
+            ):
+                run_cli(
+                    connection,
+                    input_func=InputFeeder(["10"]),
+                    output_func=output_func,
+                    export_directory=self.directory,
+                    backup_directory=backup_directory,
+                )
+
+            self.assertIs(raised.exception, expected)
+            backed_up.assert_called_once_with(connection, backup_directory)
+            backup_files = list(backup_directory.glob("*.sqlite3"))
+            self.assertEqual(len(backup_files), 1)
+            backup_connection = sqlite3.connect(backup_files[0])
+            try:
+                self.assertEqual(
+                    backup_connection.execute(
+                        "PRAGMA quick_check"
+                    ).fetchone()[0],
+                    "ok",
+                )
+                self.assertEqual(
+                    backup_connection.execute(
+                        "SELECT id FROM literature"
+                    ).fetchall(),
+                    [(literature_id,)],
+                )
+            finally:
+                backup_connection.close()
+            self.assertEqual(
+                self.table_snapshot_for(connection),
+                source_before,
+            )
+            self.assertEqual(
+                self.schema_snapshot_for(connection),
+                schema_before,
+            )
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_backup_unexpected_exception_is_propagated_unchanged(self) -> None:
+        expected = RuntimeError("unexpected backup failure")
+        outputs: list[str] = []
+
+        with (
+            patch.object(
+                cli_module,
+                "create_database_backup",
+                side_effect=expected,
+            ) as backed_up,
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            run_cli(
+                self.connection,
+                input_func=InputFeeder(["10"]),
+                output_func=outputs.append,
+                export_directory=self.directory,
+                backup_directory=self.directory,
+            )
+
+        self.assertIs(raised.exception, expected)
+        backed_up.assert_called_once_with(self.connection, self.directory)
+        self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+        self.assertFalse(
+            any(item.startswith("バックアップエラー: ") for item in outputs)
+        )
+
+    def test_literature_detail_main_menu_zero_through_eleven_contract(
         self,
     ) -> None:
         feeder = InputFeeder(
-            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "0"]
+            [
+                "1",
+                "2",
+                "3",
+                "4",
+                "5",
+                "6",
+                "7",
+                "8",
+                "9",
+                "10",
+                "11",
+                "0",
+            ]
         )
         outputs: list[str] = []
 
@@ -13268,6 +13798,7 @@ class CliTestCase(unittest.TestCase):
                 "_run_csv_export",
                 return_value=False,
             ) as csv_exported,
+            patch.object(cli_module, "_run_database_backup") as backed_up,
         ):
             result = run_cli(
                 self.connection,
@@ -13286,12 +13817,13 @@ class CliTestCase(unittest.TestCase):
             "7. 使用履歴管理",
             "8. 文献詳細",
             "9. CSV出力",
+            "10. SQLiteバックアップ",
             "0. 終了",
         )
         for option in expected_options:
             with self.subTest(option=option):
                 self.assertIn(option, outputs[0])
-        self.assertNotIn("10. ", outputs[0])
+        self.assertNotIn("11. ", outputs[0])
         listed.assert_called_once_with(self.connection)
         for flow in (
             searched,
@@ -13313,6 +13845,11 @@ class CliTestCase(unittest.TestCase):
             outputs.append,
             "exports",
             None,
+        )
+        backed_up.assert_called_once_with(
+            self.connection,
+            outputs.append,
+            "backups",
         )
         self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 1)
         self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
