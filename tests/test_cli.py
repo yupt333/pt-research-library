@@ -19,6 +19,7 @@ from src.repository import (
     create_tag,
     create_usage_history,
     delete_literature,
+    delete_tag,
     get_literature,
     get_literature_related_counts,
     get_tag,
@@ -234,6 +235,25 @@ class CliTestCase(unittest.TestCase):
             str(tag_id),
             new_name,
             confirmation,
+            final_submenu_choice,
+            final_menu_choice,
+        ]
+
+    @staticmethod
+    def tag_delete_actions(
+        tag_id: int | str,
+        *,
+        confirmation: str = "1",
+        confirmed_id: str | None = None,
+        final_submenu_choice: str = "0",
+        final_menu_choice: str = "0",
+    ) -> list[str]:
+        return [
+            "6",
+            "4",
+            str(tag_id),
+            confirmation,
+            str(tag_id) if confirmed_id is None else confirmed_id,
             final_submenu_choice,
             final_menu_choice,
         ]
@@ -6610,11 +6630,16 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("1. タグ一覧", cli_module._TAG_MANAGEMENT_MENU)
         self.assertIn("2. タグ作成", cli_module._TAG_MANAGEMENT_MENU)
         self.assertIn("3. タグ名称変更", cli_module._TAG_MANAGEMENT_MENU)
+        self.assertIn("4. タグ削除", cli_module._TAG_MANAGEMENT_MENU)
         self.assertIn(
             "0. メインメニューに戻る",
             cli_module._TAG_MANAGEMENT_MENU,
         )
-        for forbidden in ("タグ削除", "タグ付与", "タグ解除", "使用履歴"):
+        self.assertNotIn(
+            "5. メインメニューに戻る",
+            cli_module._TAG_MANAGEMENT_MENU,
+        )
+        for forbidden in ("タグ付与", "タグ解除", "使用履歴"):
             self.assertNotIn(forbidden, cli_module._TAG_MANAGEMENT_MENU)
         self.assertEqual(
             outputs.count(cli_module._INVALID_TAG_MENU_MESSAGE),
@@ -6632,6 +6657,56 @@ class CliTestCase(unittest.TestCase):
             feeder.prompts.count("選択してください: "),
             invalid_count + 5,
         )
+
+    def test_tag_submenu_zero_returns_four_deletes_and_five_stays_invalid(
+        self,
+    ) -> None:
+        feeder = InputFeeder(["6", "5", "0", "6", "4", "0", "0"])
+        outputs: list[str] = []
+
+        with patch.object(
+            cli_module,
+            "_run_tag_delete",
+            return_value=False,
+        ) as delete_flow:
+            result = run_cli(
+                self.connection,
+                input_func=feeder,
+                output_func=outputs.append,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            cli_module._INVALID_TAG_MENU_MESSAGE,
+            "入力エラー: 0、1、2、3、4のいずれかを選択してください。",
+        )
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_TAG_MENU_MESSAGE),
+            1,
+        )
+        self.assertEqual(outputs.count(cli_module._TAG_MANAGEMENT_MENU), 4)
+        self.assertEqual(
+            sum("理学療法文献ライブラリ" in item for item in outputs),
+            3,
+        )
+        first_tag_menu = outputs.index(cli_module._TAG_MANAGEMENT_MENU)
+        invalid_message = outputs.index(cli_module._INVALID_TAG_MENU_MESSAGE)
+        second_tag_menu = outputs.index(
+            cli_module._TAG_MANAGEMENT_MENU,
+            first_tag_menu + 1,
+        )
+        next_main_menu = next(
+            index
+            for index, message in enumerate(
+                outputs[second_tag_menu + 1 :],
+                start=second_tag_menu + 1,
+            )
+            if "理学療法文献ライブラリ" in message
+        )
+        self.assertLess(first_tag_menu, invalid_message)
+        self.assertLess(invalid_message, second_tag_menu)
+        self.assertLess(second_tag_menu, next_main_menu)
+        delete_flow.assert_called_once()
 
     def test_tag_list_uses_repository_order_and_preserves_objects_and_db(
         self,
@@ -7659,6 +7734,638 @@ class CliTestCase(unittest.TestCase):
                 sqlite3.Connection.rollback(connection)
             sqlite3.Connection.close(connection)
 
+    def test_tag_delete_success_uses_repository_apis_and_isolated_cascades(
+        self,
+    ) -> None:
+        first_literature_id = self.add_record("Tag delete first literature")
+        second_literature_id = self.add_record("Tag delete second literature")
+        target_tag_id = create_tag(self.connection, "Delete target tag")
+        shared_tag_id = create_tag(self.connection, "Delete kept shared tag")
+        other_tag_id = create_tag(self.connection, "Delete kept other tag")
+        for literature_id, tag_id in (
+            (first_literature_id, target_tag_id),
+            (second_literature_id, target_tag_id),
+            (first_literature_id, shared_tag_id),
+            (second_literature_id, shared_tag_id),
+            (second_literature_id, other_tag_id),
+        ):
+            attach_tag_to_literature(self.connection, literature_id, tag_id)
+        create_usage_history(
+            self.connection,
+            first_literature_id,
+            "delete-tag-first-use",
+        )
+        create_usage_history(
+            self.connection,
+            second_literature_id,
+            "delete-tag-second-use",
+        )
+        self.connection.execute("PRAGMA user_version = 88")
+        before = self.table_snapshot()
+        schema_before = self.schema_snapshot()
+        schema_version_before = self.connection.execute(
+            "PRAGMA schema_version"
+        ).fetchone()[0]
+        user_version_before = self.connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+
+        with (
+            patch.object(cli_module, "get_tag", wraps=get_tag) as retrieved,
+            patch.object(
+                cli_module,
+                "delete_tag",
+                wraps=delete_tag,
+            ) as deleted,
+        ):
+            _, feeder, outputs = self.run_with_actions(
+                [
+                    "6",
+                    "4",
+                    f" \t00{target_tag_id}\n ",
+                    "1",
+                    str(other_tag_id),
+                    f"00{target_tag_id}",
+                    "0",
+                    "0",
+                ]
+            )
+
+        retrieved.assert_called_once_with(self.connection, target_tag_id)
+        deleted.assert_called_once_with(self.connection, target_tag_id)
+        self.assertIsNone(get_tag(self.connection, target_tag_id))
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM literature_tags WHERE tag_id = ?",
+                (target_tag_id,),
+            ).fetchone()[0],
+            0,
+        )
+        after = self.table_snapshot()
+        self.assertEqual(after["literature"], before["literature"])
+        self.assertEqual(after["usage_history"], before["usage_history"])
+        self.assertEqual(
+            after["tags"],
+            [row for row in before["tags"] if row[0] != target_tag_id],
+        )
+        self.assertEqual(
+            after["literature_tags"],
+            [
+                row
+                for row in before["literature_tags"]
+                if row[1] != target_tag_id
+            ],
+        )
+        self.assertEqual(
+            {
+                tuple(row)
+                for row in self.connection.execute(
+                    """
+                    SELECT literature_id, tag_id
+                    FROM literature_tags
+                    WHERE tag_id IN (?, ?)
+                    """,
+                    (shared_tag_id, other_tag_id),
+                ).fetchall()
+            },
+            {
+                (first_literature_id, shared_tag_id),
+                (second_literature_id, shared_tag_id),
+                (second_literature_id, other_tag_id),
+            },
+        )
+        self.assertEqual(self.schema_snapshot(), schema_before)
+        self.assertEqual(
+            self.connection.execute("PRAGMA schema_version").fetchone()[0],
+            schema_version_before,
+        )
+        self.assertEqual(
+            self.connection.execute("PRAGMA user_version").fetchone()[0],
+            user_version_before,
+        )
+        self.assertFalse(self.connection.in_transaction)
+        self.assertEqual(self.connection.execute("SELECT 1").fetchone()[0], 1)
+        self.assertIn(f"ID: {target_tag_id}\nname: Delete target tag", outputs)
+        for warning in (
+            "警告: タグレコード自体は削除されます。",
+            "このタグとすべての文献との関連付けは削除されます。",
+            "文献レコード自体は削除されません。",
+            "使用履歴は削除されません。",
+            "他のタグは削除されません。",
+            "CLIには自動復元機能がありません。",
+        ):
+            self.assertIn(warning, outputs)
+        self.assertIn("タグを削除しました。", outputs)
+        self.assertIn(f"タグID: {target_tag_id}", outputs)
+        self.assertIn("name: Delete target tag", outputs)
+        self.assertIn(
+            f"入力エラー: タグID {target_tag_id} または0を入力してください。",
+            outputs,
+        )
+        self.assertTrue(
+            any(
+                prompt.startswith(
+                    f"削除を確定するためタグID {target_tag_id}"
+                )
+                for prompt in feeder.prompts
+            )
+        )
+
+    def test_tag_delete_id_validation_missing_and_confirmation_contract(
+        self,
+    ) -> None:
+        target_tag_id = create_tag(self.connection, "Delete safety target")
+        invalid_values = (
+            "",
+            "0",
+            "-1",
+            "+1",
+            "1.5",
+            "1e3",
+            "１",
+            "١",
+            "id",
+            "1x",
+        )
+        for invalid_value in invalid_values:
+            with self.subTest(stage="initial_id", value=invalid_value):
+                before = self.table_snapshot()
+                with (
+                    patch.object(cli_module, "get_tag") as retrieved,
+                    patch.object(cli_module, "delete_tag") as deleted,
+                ):
+                    _, _, outputs = self.run_with_actions(
+                        ["6", "4", invalid_value, "0", "0"]
+                    )
+                retrieved.assert_not_called()
+                deleted.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertTrue(
+                    any(
+                        item.startswith("入力エラー: ")
+                        and "タグID" in item
+                        and "ASCII" in item
+                        for item in outputs
+                    )
+                )
+
+        before = self.table_snapshot()
+        with (
+            patch.object(cli_module, "get_tag", wraps=get_tag) as retrieved,
+            patch.object(cli_module, "delete_tag") as deleted,
+        ):
+            _, _, missing_outputs = self.run_with_actions(
+                ["6", "4", "999999", "0", "0"]
+            )
+        retrieved.assert_called_once_with(self.connection, 999999)
+        deleted.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertIn("対象タグが見つかりません。", missing_outputs)
+
+        invalid_count = 1200
+        with patch.object(cli_module, "delete_tag") as deleted:
+            _, _, cancel_outputs = self.run_with_actions(
+                [
+                    "6",
+                    "4",
+                    str(target_tag_id),
+                    "",
+                    "invalid",
+                    *(["9"] * invalid_count),
+                    " 0 ",
+                    "0",
+                    "0",
+                ]
+            )
+        deleted.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            cancel_outputs.count(cli_module._INVALID_CONFIRMATION_MESSAGE),
+            invalid_count + 2,
+        )
+        self.assertIn("タグ削除を中止しました。", cancel_outputs)
+
+        final_invalid_values = ("", "+1", "１", "999998")
+        with patch.object(cli_module, "delete_tag") as deleted:
+            _, _, final_cancel_outputs = self.run_with_actions(
+                [
+                    "6",
+                    "4",
+                    str(target_tag_id),
+                    "1",
+                    *final_invalid_values,
+                    "0",
+                    "0",
+                    "0",
+                ]
+            )
+        deleted.assert_not_called()
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            final_cancel_outputs.count(
+                f"入力エラー: タグID {target_tag_id} または0を入力してください。"
+            ),
+            len(final_invalid_values),
+        )
+        self.assertIn("タグ削除を中止しました。", final_cancel_outputs)
+
+        with patch.object(
+            cli_module,
+            "delete_tag",
+            return_value=False,
+        ) as deleted:
+            _, _, false_outputs = self.run_with_actions(
+                self.tag_delete_actions(target_tag_id)
+            )
+        deleted.assert_called_once_with(self.connection, target_tag_id)
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertIn("確認後に対象タグが存在しなくなりました。", false_outputs)
+        self.assertNotIn("タグを削除しました。", false_outputs)
+
+    def test_tag_delete_rejects_initial_and_late_transactions_with_markers(
+        self,
+    ) -> None:
+        connection, _, target_id, _ = self.create_tracking_tag_fixture(
+            "delete-transactions"
+        )
+        try:
+            target_before = get_tag(connection, target_id)
+            initial_marker = connection.execute(
+                "INSERT INTO tags (name) VALUES (?)",
+                ("pending-tag-delete-initial",),
+            )
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            with (
+                patch.object(cli_module, "get_tag") as retrieved,
+                patch.object(cli_module, "delete_tag") as deleted,
+            ):
+                _, _, outputs = self.run_with_actions(
+                    ["6", "4", "0", "0"],
+                    connection=connection,
+                )
+            retrieved.assert_not_called()
+            deleted.assert_not_called()
+            self.assertIn(
+                cli_module._TAG_DELETE_ACTIVE_TRANSACTION_MESSAGE,
+                outputs,
+            )
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(get_tag(connection, target_id), target_before)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (initial_marker.lastrowid,),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            sqlite3.Connection.rollback(connection)
+
+            feeder = InputFeeder(
+                ["6", "4", str(target_id), "1", str(target_id), "0", "0"]
+            )
+            marker_ids: list[int] = []
+
+            def input_func(prompt: str) -> str:
+                value = feeder(prompt)
+                if prompt.startswith("削除を確定するためタグID"):
+                    marker = connection.execute(
+                        "INSERT INTO tags (name) VALUES (?)",
+                        ("pending-tag-delete-late",),
+                    )
+                    marker_ids.append(marker.lastrowid)
+                return value
+
+            outputs = []
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            with patch.object(cli_module, "delete_tag") as deleted:
+                result = run_cli(
+                    connection,
+                    input_func=input_func,
+                    output_func=outputs.append,
+                )
+            self.assertIsNone(result)
+            deleted.assert_not_called()
+            self.assertEqual(len(marker_ids), 1)
+            self.assertTrue(connection.in_transaction)
+            self.assertEqual(get_tag(connection, target_id), target_before)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM tags WHERE id = ?",
+                    (marker_ids[0],),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertIn(
+                cli_module._TAG_DELETE_ACTIVE_TRANSACTION_MESSAGE,
+                outputs,
+            )
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_tag_delete_repository_api_exception_boundaries(self) -> None:
+        target_id = create_tag(self.connection, "Delete API target")
+        exception_factories = (
+            ("sqlite3.Error", lambda: sqlite3.OperationalError("delete API sqlite")),
+            ("ValueError", lambda: ValueError("delete API value")),
+            ("RuntimeError", lambda: RuntimeError("delete API runtime")),
+            ("EOFError", lambda: EOFError("delete API EOF")),
+            ("KeyboardInterrupt", KeyboardInterrupt),
+        )
+
+        for api_name in ("get_tag", "delete_tag"):
+            for exception_name, exception_factory in exception_factories:
+                with self.subTest(api=api_name, exception=exception_name):
+                    expected = exception_factory()
+                    before = self.table_snapshot()
+                    actions = ["6", "4", str(target_id)]
+                    if api_name == "delete_tag":
+                        actions.extend(["1", str(target_id)])
+                    outputs: list[str] = []
+                    with (
+                        patch.object(
+                            cli_module,
+                            api_name,
+                            side_effect=expected,
+                        ) as failed_api,
+                        patch.object(cli_module, "delete_tag")
+                        if api_name == "get_tag"
+                        else patch.object(cli_module, "get_tag", wraps=get_tag),
+                    ):
+                        with self.assertRaises(type(expected)) as raised:
+                            run_cli(
+                                self.connection,
+                                input_func=InputFeeder(actions),
+                                output_func=outputs.append,
+                            )
+
+                    self.assertIs(raised.exception, expected)
+                    failed_api.assert_called_once()
+                    self.assertEqual(self.table_snapshot(), before)
+                    if isinstance(expected, sqlite3.Error):
+                        self.assertEqual(
+                            outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                            1,
+                        )
+                    else:
+                        self.assertNotIn(
+                            cli_module._DATABASE_ERROR_MESSAGE,
+                            outputs,
+                        )
+
+    def test_real_sqlite_tag_delete_failure_rolls_back_and_rethrows_same_error(
+        self,
+    ) -> None:
+        connection, literature_id, target_id, other_tag_id = (
+            self.create_tracking_tag_fixture("delete-real-sqlite-failure")
+        )
+        try:
+            other_literature_id = add_literature(
+                connection,
+                Literature(title="Delete failure other literature"),
+            )
+            attach_tag_to_literature(connection, other_literature_id, target_id)
+            attach_tag_to_literature(
+                connection,
+                other_literature_id,
+                other_tag_id,
+            )
+            create_usage_history(
+                connection,
+                other_literature_id,
+                "delete-failure-other-use",
+            )
+            connection.execute(
+                """
+                CREATE TRIGGER reject_forced_tag_delete
+                BEFORE DELETE ON tags
+                BEGIN
+                    SELECT RAISE(ABORT, 'forced CLI tag delete failure');
+                END
+                """
+            )
+            connection.commit()
+            before = self.table_snapshot_for(connection)
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            api_errors: list[sqlite3.Error] = []
+
+            def tracked_delete(
+                candidate_connection: sqlite3.Connection,
+                tag_id: int,
+            ) -> bool:
+                try:
+                    return delete_tag(candidate_connection, tag_id)
+                except sqlite3.Error as error:
+                    api_errors.append(error)
+                    raise
+
+            outputs: list[str] = []
+            with patch.object(
+                cli_module,
+                "delete_tag",
+                side_effect=tracked_delete,
+            ) as deleted:
+                with self.assertRaises(sqlite3.IntegrityError) as raised:
+                    run_cli(
+                        connection,
+                        input_func=InputFeeder(
+                            ["6", "4", str(target_id), "1", str(target_id)]
+                        ),
+                        output_func=outputs.append,
+                    )
+
+            deleted.assert_called_once_with(connection, target_id)
+            self.assertEqual(len(api_errors), 1)
+            self.assertIs(raised.exception, api_errors[0])
+            self.assertEqual(self.table_snapshot_for(connection), before)
+            self.assertIsNotNone(get_tag(connection, target_id))
+            self.assertIsNotNone(get_tag(connection, other_tag_id))
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM literature_tags WHERE tag_id = ?",
+                    (target_id,),
+                ).fetchone()[0],
+                2,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM literature WHERE id IN (?, ?)",
+                    (literature_id, other_literature_id),
+                ).fetchone()[0],
+                2,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM usage_history"
+                ).fetchone()[0],
+                2,
+            )
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertEqual(
+                outputs.count(cli_module._DATABASE_ERROR_MESSAGE),
+                1,
+            )
+            self.assertNotIn("タグを削除しました。", outputs)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_tag_delete_success_output_failure_keeps_committed_cascade(
+        self,
+    ) -> None:
+        connection, literature_id, target_id, other_tag_id = (
+            self.create_tracking_tag_fixture("delete-success-output")
+        )
+        try:
+            second_literature_id = add_literature(
+                connection,
+                Literature(title="Delete output second literature"),
+            )
+            attach_tag_to_literature(connection, second_literature_id, target_id)
+            attach_tag_to_literature(
+                connection,
+                second_literature_id,
+                other_tag_id,
+            )
+            create_usage_history(
+                connection,
+                second_literature_id,
+                "delete-output-second-use",
+            )
+            connection.execute("PRAGMA user_version = 89")
+            before = self.table_snapshot_for(connection)
+            schema_before = self.schema_snapshot_for(connection)
+            schema_version_before = connection.execute(
+                "PRAGMA schema_version"
+            ).fetchone()[0]
+            user_version_before = connection.execute(
+                "PRAGMA user_version"
+            ).fetchone()[0]
+            connection.commit_calls = 0
+            connection.rollback_calls = 0
+            connection.close_calls = 0
+            expected = RuntimeError("tag delete success output failure")
+            outputs: list[str] = []
+
+            def output_func(message: str) -> None:
+                outputs.append(message)
+                if message == "タグを削除しました。":
+                    raise expected
+
+            with patch.object(
+                cli_module,
+                "delete_tag",
+                wraps=delete_tag,
+            ) as deleted:
+                with self.assertRaises(RuntimeError) as raised:
+                    run_cli(
+                        connection,
+                        input_func=InputFeeder(
+                            ["6", "4", str(target_id), "1", str(target_id)]
+                        ),
+                        output_func=output_func,
+                    )
+
+            self.assertIs(raised.exception, expected)
+            deleted.assert_called_once_with(connection, target_id)
+            after = self.table_snapshot_for(connection)
+            self.assertEqual(
+                after["tags"],
+                [row for row in before["tags"] if row[0] != target_id],
+            )
+            self.assertEqual(
+                after["literature_tags"],
+                [row for row in before["literature_tags"] if row[1] != target_id],
+            )
+            self.assertEqual(after["literature"], before["literature"])
+            self.assertEqual(after["usage_history"], before["usage_history"])
+            self.assertIsNone(get_tag(connection, target_id))
+            self.assertIsNotNone(get_tag(connection, other_tag_id))
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM literature WHERE id IN (?, ?)",
+                    (literature_id, second_literature_id),
+                ).fetchone()[0],
+                2,
+            )
+            self.assertEqual(
+                self.schema_snapshot_for(connection),
+                schema_before,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA schema_version").fetchone()[0],
+                schema_version_before,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                user_version_before,
+            )
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(connection.execute("SELECT 1").fetchone()[0], 1)
+            self.assertEqual(connection.commit_calls, 0)
+            self.assertEqual(connection.rollback_calls, 0)
+            self.assertEqual(connection.close_calls, 0)
+            self.assertEqual(outputs.count("タグを削除しました。"), 1)
+            self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+            self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+        finally:
+            if connection.in_transaction:
+                sqlite3.Connection.rollback(connection)
+            sqlite3.Connection.close(connection)
+
+    def test_tag_delete_output_interruptions_are_not_input_interruptions(
+        self,
+    ) -> None:
+        target_id = create_tag(self.connection, "Delete output target")
+        exceptions = (
+            EOFError("tag delete output EOF"),
+            KeyboardInterrupt(),
+            sqlite3.OperationalError("tag delete output sqlite"),
+        )
+        for expected in exceptions:
+            with self.subTest(exception=type(expected).__name__):
+                before = self.table_snapshot()
+                outputs: list[str] = []
+
+                def output_func(message: str) -> None:
+                    outputs.append(message)
+                    if message == "警告: タグレコード自体は削除されます。":
+                        raise expected
+
+                with patch.object(cli_module, "delete_tag") as deleted:
+                    with self.assertRaises(type(expected)) as raised:
+                        run_cli(
+                            self.connection,
+                            input_func=InputFeeder(
+                                ["6", "4", str(target_id)]
+                            ),
+                            output_func=output_func,
+                        )
+
+                self.assertIs(raised.exception, expected)
+                deleted.assert_not_called()
+                self.assertEqual(self.table_snapshot(), before)
+                self.assertNotIn(cli_module._EXIT_MESSAGE, outputs)
+                self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
+
     def test_tag_input_exception_matrix_preserves_state_and_boundaries(
         self,
     ) -> None:
@@ -7715,6 +8422,37 @@ class CliTestCase(unittest.TestCase):
                     "タグID（ASCII数字）: ",
                     "新しいタグ名（必須）: ",
                     "選択してください: ",
+                ],
+            ),
+            (
+                "delete_id",
+                lambda _: ["6", "4"],
+                [
+                    "選択してください: ",
+                    "選択してください: ",
+                    "タグID（ASCII数字）: ",
+                ],
+            ),
+            (
+                "delete_confirmation",
+                lambda tag_id: ["6", "4", str(tag_id)],
+                [
+                    "選択してください: ",
+                    "選択してください: ",
+                    "タグID（ASCII数字）: ",
+                    "選択してください: ",
+                ],
+            ),
+            (
+                "delete_final_id",
+                lambda tag_id: ["6", "4", str(tag_id), "1"],
+                [
+                    "選択してください: ",
+                    "選択してください: ",
+                    "タグID（ASCII数字）: ",
+                    "選択してください: ",
+                    f"削除を確定するためタグID 1 を再入力してください\n"
+                    "（0で中止）: ",
                 ],
             ),
         )
@@ -7778,6 +8516,11 @@ class CliTestCase(unittest.TestCase):
                                     "rename_tag",
                                     wraps=cli_module.rename_tag,
                                 ) as renamed,
+                                patch.object(
+                                    cli_module,
+                                    "delete_tag",
+                                    wraps=cli_module.delete_tag,
+                                ) as deleted,
                             ):
                                 if isinstance(
                                     expected,
@@ -7811,6 +8554,7 @@ class CliTestCase(unittest.TestCase):
                             self.assertEqual(feeder.prompts, expected_prompts)
                             created.assert_not_called()
                             renamed.assert_not_called()
+                            deleted.assert_not_called()
                             self.assertEqual(
                                 self.table_snapshot_for(connection),
                                 before,
@@ -8122,6 +8866,10 @@ class CliTestCase(unittest.TestCase):
                 "rename_tag",
                 ["6", "3", str(tag_id), "DB rename", "1"],
             ),
+            (
+                "delete_tag",
+                ["6", "4", str(tag_id), "1", str(tag_id)],
+            ),
         )
 
         for api_name, actions in cases:
@@ -8166,7 +8914,7 @@ class CliTestCase(unittest.TestCase):
             connection.close_calls = 0
 
             _, _, outputs = self.run_with_actions(
-                ["6", "2", "3", "0", "0"],
+                ["6", "2", "3", "4", "0", "0"],
                 connection=connection,
             )
 
@@ -8176,6 +8924,10 @@ class CliTestCase(unittest.TestCase):
             )
             self.assertIn(
                 cli_module._TAG_RENAME_ACTIVE_TRANSACTION_MESSAGE,
+                outputs,
+            )
+            self.assertIn(
+                cli_module._TAG_DELETE_ACTIVE_TRANSACTION_MESSAGE,
                 outputs,
             )
             self.assertEqual(connection.commit_calls, 0)

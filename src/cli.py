@@ -10,6 +10,7 @@ from src.repository import (
     add_literature,
     create_tag,
     delete_literature,
+    delete_tag,
     get_literature,
     get_literature_related_counts,
     get_tag,
@@ -161,9 +162,10 @@ _TAG_MANAGEMENT_MENU = """タグ管理
 1. タグ一覧
 2. タグ作成
 3. タグ名称変更
+4. タグ削除
 0. メインメニューに戻る"""
 _INVALID_TAG_MENU_MESSAGE = (
-    "入力エラー: 0、1、2、3のいずれかを選択してください。"
+    "入力エラー: 0、1、2、3、4のいずれかを選択してください。"
 )
 _TAG_CREATE_CONFIRMATION_MENU = """1. このタグを登録する
 0. 登録を中止する"""
@@ -174,6 +176,9 @@ _TAG_CREATE_ACTIVE_TRANSACTION_MESSAGE = (
 )
 _TAG_RENAME_ACTIVE_TRANSACTION_MESSAGE = (
     "アクティブなトランザクション中はタグ名称を変更できません。"
+)
+_TAG_DELETE_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中はタグを削除できません。"
 )
 _DUPLICATE_REASON_LABELS = {
     "doi": "DOI一致",
@@ -873,6 +878,112 @@ def _run_tag_rename(
     return False
 
 
+def _run_tag_delete(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Display tag-deletion impact and require two confirmations."""
+    if connection.in_transaction:
+        output_func(_TAG_DELETE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        raw_tag_id = _read_input(input_func, "タグID（ASCII数字）: ")
+    except (EOFError, KeyboardInterrupt):
+        return True
+
+    try:
+        tag_id = _required_positive_ascii_integer(raw_tag_id, "タグID")
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        tag = get_tag(connection, tag_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if tag is None:
+        output_func("対象タグが見つかりません。")
+        return False
+
+    output_func("削除対象タグ:")
+    output_func(_format_tag(tag))
+    output_func("削除対象と影響を確認してください。")
+    output_func("警告: タグレコード自体は削除されます。")
+    output_func("このタグとすべての文献との関連付けは削除されます。")
+    output_func("文献レコード自体は削除されません。")
+    output_func("使用履歴は削除されません。")
+    output_func("他のタグは削除されません。")
+    output_func("CLIには自動復元機能がありません。")
+
+    output_func(_DELETE_CONFIRMATION_MENU)
+    while True:
+        try:
+            raw_confirmation = _read_input(input_func, _MENU_PROMPT)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmation = raw_confirmation.strip()
+        if confirmation == "0":
+            output_func("タグ削除を中止しました。")
+            return False
+        if confirmation == "1":
+            break
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+    final_confirmation_prompt = (
+        f"削除を確定するためタグID {tag_id} を再入力してください\n"
+        "（0で中止）: "
+    )
+    invalid_final_confirmation_message = (
+        f"入力エラー: タグID {tag_id} または0を入力してください。"
+    )
+    while True:
+        try:
+            raw_confirmed_id = _read_input(
+                input_func,
+                final_confirmation_prompt,
+            )
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmed_id_text = raw_confirmed_id.strip()
+        if confirmed_id_text == "0":
+            output_func("タグ削除を中止しました。")
+            return False
+        try:
+            confirmed_id = _required_positive_ascii_integer(
+                raw_confirmed_id,
+                "タグID",
+            )
+        except ValueError:
+            output_func(invalid_final_confirmation_message)
+            continue
+        if confirmed_id == tag_id:
+            break
+        output_func(invalid_final_confirmation_message)
+
+    if connection.in_transaction:
+        output_func(_TAG_DELETE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+
+    try:
+        deleted = delete_tag(connection, tag_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if not deleted:
+        output_func("確認後に対象タグが存在しなくなりました。")
+        return False
+
+    output_func("タグを削除しました。")
+    output_func(f"タグID: {tag_id}")
+    output_func(f"name: {tag.name}")
+    return False
+
+
 def _run_tag_management(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
@@ -889,7 +1000,7 @@ def _run_tag_management(
 
         if choice == "0":
             return False
-        if choice not in {"1", "2", "3"}:
+        if choice not in {"1", "2", "3", "4"}:
             output_func(_INVALID_TAG_MENU_MESSAGE)
             continue
 
@@ -907,6 +1018,12 @@ def _run_tag_management(
         ):
             return True
         elif choice == "3" and _run_tag_rename(
+            connection,
+            input_func,
+            output_func,
+        ):
+            return True
+        elif choice == "4" and _run_tag_delete(
             connection,
             input_func,
             output_func,

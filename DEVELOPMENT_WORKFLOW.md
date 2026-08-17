@@ -189,9 +189,11 @@ Current sub-step:
 - Step 8C: tag and usage-history management
   - Status: in progress
   - Step 8C-1A: tag listing, creation, and renaming
-    - Status: current sub-step, in progress
+    - Status: completed and pushed
+    - Includes repository-backed tag listing, creation, and renaming with
+      input and transaction safety
   - Step 8C-1B
-    - Status: not started
+    - Status: current sub-step, in progress
   - Step 8C-2
     - Status: not started
   - Step 8C-3A
