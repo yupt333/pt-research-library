@@ -608,40 +608,68 @@ GUI化は基本機能の安定後に検討する。
 
 ---
 
-## 20. Phase 2以降の候補
+## 20. Phase 2以降のProduct Direction
 
-### Phase 2
+この節はPhase 2以降の正式な製品方向を定める。詳細な設計原則、Phase 2-0〜2-12の順序、Phase 3ロードマップ、Phase 4 automation gateは[`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)を参照する。
 
-- DOI入力による書誌情報取得
-- PubMed検索
-- Crossref検索
-- PMID・DOI相互補完
-- 書誌情報の自動整形
-- PDFファイルとの関連付け強化
+### 20.1 Product GoalとPT specialization
 
-### Phase 3
+PT Research Libraryは、単なるPDF管理・AI要約アプリではない。最終目標は、次の研究支援システムである。
 
-- AIによる要約の自動生成
-- AIによる自動生成とPhase 1のAI要約確認状態管理との連携
-- 原文引用箇所の保存
-- 英文と日本語訳の対照表示
-- 研究テーマ別の文献比較表作成
+> 理学療法・運動器研究に必要な文献整理、比較、根拠確認、研究プロジェクトとの関連付けを、できるだけ少ない操作で行える研究支援システム
 
-### Phase 4
+少ない操作、PT・運動器研究向けの構造化、根拠付きAI抽出、方法・定義を考慮した文献比較、自分の研究との関連付け、原著へすぐ戻れることを中心的な差別化とする。PDF保存、AI要約、タグ、Markdown、ChatGPT連携だけでは差別化とみなさない。
 
-- note記事用参考文献一覧
-- 学会発表用文献一覧
-- 大学院研究計画用文献一覧
-- 引用形式の自動生成
-- 研究テーマ別エクスポート
+### 20.2 ChatGPTとアプリケーションの役割分担
 
-### Phase 5
+初期・中期段階ではAIをアプリ内へ直接内蔵しない。
 
-- GUIまたはローカルWebアプリ
-- 高度な全文検索
-- 文献間リンク
-- 研究プロジェクト管理
-- GitHub Actionsやクラウド連携の検討
+- ChatGPTは、PDF読解、要約、書誌確認、研究目的・Population・Methods・Results・Limitations・Conceptsの抽出、複数文献の解釈、自分の研究との関連検討を担う。
+- PT Research Libraryは、PDF管理、構造化保存、ChatGPT解析結果取り込み、検索、比較、Evidence provenance、Project関連付け、文献・概念・研究の関係、未解決課題と次のactionの管理を担う。
+
+原則を「ChatGPT = 読む・考える」「PT Research Library = 整理する・比較する・根拠を保持する・研究につなげる」とする。
+
+### 20.3 Phase 2のAPI・費用方針
+
+Phase 2ではOpenAI APIを導入しない。ChatGPTで作成した統一フォーマットの解析結果をImport Previewで利用者が確認した後に保存する。追加OpenAI API費用は0円を基本とする。
+
+OpenAI API、その他の有料AI API、cloud database、有料server、有料SaaS、有料dependency、その他の継続費用が発生するサービスは、ユーザーの明示承認なしに導入しない。追加費用を検討する場合は、実装前に費用、必要性、無料代替案、想定利用量、採算性を提示する。
+
+### 20.4 Phase 1 backward compatibility
+
+既存の`literature`、`tags`、`literature_tags`、`usage_history`、repository validation、search、duplicate detection、CSV、SQLite backup、CLI、application entrypointをPhase 2以降の基盤として保護する。
+
+Phase 2では、既存構造を壊さず新しい構造を追加することを原則とする。既存データの自動削除、既存IDの再生成、Phase 1 fieldsまたは既存AI statusの意味変更、destructive migrationを禁止する。将来のschema変更では、backward compatibility、existing data preservation、migration tests、foreign key integrity、backup strategy、rollback / failure behaviorを検証する。
+
+### 20.5 Structured Data
+
+現在の`literature`を文献マスターとして維持し、PT研究用情報を大量のflat columnsとして無制限に追加しない。Study information、Methods / conditions、Outcomes、Evidence references、Concepts、Research Projectsを独立構造として扱う方向とする。全項目を全論文で必須にせず、存在する情報だけを構造化可能とする。
+
+### 20.6 Outcome definition
+
+`Outcome name`と`Outcome definition / calculation method`は必ず分離して管理する。
+
+```text
+同じOutcome名 ≠ 直接比較可能
+```
+
+Displacement、Strain、Slidingは異なる力学的指標として扱う。比較時は数値の近さだけでなく、measurement condition、definition、calculation、imaging condition、analysis algorithm、validationを確認する。
+
+### 20.7 Evidence provenance
+
+AI抽出値は、可能な限り`Structured value → Evidence reference → PDF page → Section → Table / Figure → Original text`と追跡できる構造を目標とする。AI回答を無条件に確定値にせず、AI抽出情報にはverification状態を持たせる。AIは原著のどこを確認すべきかを案内し、最終確認は利用者が行う。
+
+### 20.8 ComparisonとResearch Project
+
+複数文献のPopulation、Methods、Outcomes、Outcome definition、QC、Validation、Statistical analysis、Main resultsなどを横並びにする比較機能をPhase 2の主要機能とする。初期段階ではAIによる比較可能性の自動判定を必須としない。
+
+現在の`usage_history.project_name`は使用履歴の文字列として維持する。Research Projectはこれと混同せず、文献と多対多で関連する独立エンティティとして設計する。将来はResearch Project / Protocolと論文Methodsを比較し、一致点、相違点、direct comparability、methodological cautionsを確認可能にする。
+
+### 20.9 UI / UXとObsidian Gate
+
+ユーザーにMarkdown、database table、internal link syntax、folder、graph、propertyの手動管理を要求せず、内部構造を意識させない。GUIの本格実装前に、Literature Detailのinformation architecture、Structured Data、Evidence、Comparisonのデータ構造を固定する。CLIを最終製品UIとはみなさない。
+
+新機能は実装前に「これはChatGPT＋Obsidianですでに簡単に実現できないか」を確認する。数操作で実現でき、PT Research Library固有の価値が小さい場合は自作の優先度を下げる。
 
 ---
 
@@ -668,7 +696,9 @@ Phase 1は、以下を満たした時点で完了とする。
 
 ---
 
-## 22. Codexへの実装指示
+## 22. Phase 1実装時のCodexへの指示
+
+以下はPhase 1の確定仕様を支えた実装指示として保持する。Phase 2以降は、現在の明示的なStep指示、本仕様書の20節、`DEVELOPMENT_WORKFLOW.md`、[`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md)に従う。
 
 Codexは以下を厳守する。
 
@@ -689,6 +719,8 @@ Codexは以下を厳守する。
 
 ## 23. 現時点での位置付け
 
-この仕様書は、Step 9でPhase 1の検証済みproduction behaviorとの整合性を監査中の仕様書である。
+Phase 1はSteps 0〜9がcompleted and pushed、completion assessmentはGO、final regressionは504 tests passedである。Phase 1の検証済みproduction behaviorをPhase 2以降の基盤として保護する。
 
-仕様を変更する場合は、変更理由と変更箇所を明示し、既存データとの互換性を確認する。
+現在はPhase 2、Current StepはPhase 2-0 Product direction / roadmap freeze、Statusはcurrent step, in progressである。Phase 2-0ではproduction code、database schema、testsを変更しない。
+
+仕様またはロードマップを変更する場合は、変更理由、既存仕様・データ・テスト・費用への影響を事前に説明し、必要なユーザー承認を得る。

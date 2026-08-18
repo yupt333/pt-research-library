@@ -279,6 +279,191 @@ Completion summary:
 - protected tracked-data audit passed
 - no blocking issues at Phase 1 completion
 
+## Current Phase
+
+Phase 2
+
+## Current Step
+
+### Phase 2-0: Product direction / roadmap freeze
+
+Status: current step, in progress
+
+Scope:
+
+- freeze the Product Goal and differentiation principles
+- freeze the ChatGPT / application responsibility boundary
+- freeze the Phase 2 API and cost policy
+- freeze the Phase 1 preservation principles
+- freeze the Phase 2-0 through Phase 2-12 roadmap
+- document the Phase 3 direction and Phase 4 automation gate
+- documentation only; no production code, database schema, or test changes
+
+The full product direction and roadmap are recorded in
+`docs/PRODUCT_ROADMAP.md`.
+
+## Phase 2 Planned Steps
+
+Phase 2 Steps must be performed in the following order. A later Step must not
+be implemented early without an approved roadmap change.
+
+### Phase 2-1: Literature Detail Information Architecture
+
+Status: planned
+
+Includes:
+
+- semantic units for literature detail
+- Overview / Study / Methods / Outcomes / Evidence / Relevance
+- UI display requirements
+- design before schema implementation
+
+### Phase 2-2: ChatGPT Structured Import Contract v1
+
+Status: planned
+
+Includes:
+
+- unified ChatGPT output format
+- bibliography / study / methods / outcomes / limitations / concepts / evidence
+- unknown / not reported / unverified semantics
+- evaluation of a machine-readable format such as JSON
+- no OpenAI API
+
+### Phase 2-3: Structured Research Data Model
+
+Status: planned
+
+Includes:
+
+- Study / Methods / Outcomes / Evidence relationships
+- SQLite schema design from the conceptual model
+- migration design
+- Phase 1 data preservation
+- mandatory migration tests
+
+### Phase 2-4: Structured Data Repository + Import Preview
+
+Status: planned
+
+Includes:
+
+- CRUD for the new structures
+- ChatGPT result parser
+- validation
+- Import Preview
+- user confirmation before save
+- unverified initial state for AI-derived information
+- no API
+
+### Phase 2-5: Evidence Reference
+
+Status: planned
+
+Includes:
+
+- page / section / table / figure / original text / verification
+- structured item to evidence association
+
+### Phase 2-6: Original PDF Evidence Navigation
+
+Status: planned
+
+Includes:
+
+- connect `pdf_path` and Evidence
+- navigation from Evidence metadata to the original source
+- no automated PDF analysis at this Step
+
+### Phase 2-7: Multi-Literature Comparison Matrix
+
+Status: planned
+
+Includes:
+
+- multiple-literature selection
+- side-by-side structured fields
+- comparison centered on PT research Methods
+
+### Phase 2-8: Outcome Comparability
+
+Status: planned
+
+Includes:
+
+- separate Outcome name and definition comparison
+- calculation / imaging / algorithm / validation display
+- consideration of directly / partially / not directly / needs review states
+- no mandatory AI-based automatic judgment
+
+### Phase 2-9: Research Project Model
+
+Status: planned
+
+Includes:
+
+- independent Project management
+- many-to-many Literature association
+- Concepts / objective / current status / unresolved issues / next action /
+  protocol notes
+
+### Phase 2-10: Own Protocol vs Literature Comparison
+
+Status: planned
+
+Includes:
+
+- structured comparison of the user's research conditions and prior studies
+- matches / differences / methodological caution / direct comparability
+
+### Phase 2-11: Integrated Research Workflow
+
+Status: planned
+
+Includes:
+
+- integrated Literature Detail / Import / Evidence / Comparison / Project flow
+- fewer user operations
+- Phase 2 UI workflow validation
+
+### Phase 2-12: Phase 2 Integration / E2E / Completion Gate
+
+Status: planned
+
+Includes:
+
+- migration persistence
+- backward compatibility
+- E2E
+- regression
+- data safety
+- Phase 2 completion assessment
+
+## Phase 3 High-Level Roadmap
+
+Phase 3 focuses on product UI, knowledge relationships, and AI-assisted
+workflow. Its order may be reevaluated at Phase 2 completion while preserving
+the following high-level direction.
+
+- Phase 3-1: Local GUI / Product UI v1
+- Phase 3-2: Concept Relations / Backlinks / Research Hub
+- Phase 3-3: ChatGPT Comparison Bridge, with no API by default
+- Phase 3-4: Natural-Language Research Assistance, validating no-API options
+  first
+- Phase 3-5: Optional Markdown / Obsidian Export, only if a need is confirmed
+
+## Phase 4 Automation Gate
+
+Full automation is a Phase 4-or-later candidate. PubMed, Crossref, automatic
+bibliographic retrieval, PDF parsing, automatic AI analysis, OpenAI API, and
+cloud services may be considered only after Phase 2 / 3 usage demonstrates
+that manual work is a bottleneck, automation has sufficient value, cost is
+acceptable, and free alternatives are insufficient.
+
+Paid services require explicit user approval before implementation. The cost,
+necessity, free alternative, expected usage, and financial viability must be
+presented before approval.
+
 ## Step entry requirements
 
 A Step may begin only when:
@@ -384,16 +569,13 @@ The database should preserve:
 
 AI-generated content must remain identifiable as unverified until the user confirms it.
 
-## Future phases
+## Roadmap governance
 
-The following are not part of Phase 1 unless explicitly approved:
+The roadmap in `docs/PRODUCT_ROADMAP.md` is the default development plan.
+Before changing it, explain the reason and the impact on the existing
+specification, data, tests, and cost. Do not substantially change Phase
+priorities or implement a later Step early without explicit user approval.
 
-- PubMed integration
-- Crossref integration
-- automatic bibliographic retrieval
-- automatic AI summarization
-- PDF parsing
-- GUI
-- web application
-- cloud database
-- automatic GitHub deployment
+Phase 2 does not introduce OpenAI API. Paid APIs, cloud databases, paid
+servers, paid SaaS, paid dependencies, and other recurring-cost services must
+not be introduced without explicit user approval.
