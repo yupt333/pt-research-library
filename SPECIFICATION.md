@@ -671,6 +671,16 @@ AI抽出値は、可能な限り`Structured value → Evidence reference → PDF
 
 新機能は実装前に「これはChatGPT＋Obsidianですでに簡単に実現できないか」を確認する。数操作で実現でき、PT Research Library固有の価値が小さい場合は自作の優先度を下げる。
 
+### 20.10 Literature Detail Information Architecture
+
+将来のLiterature Detailは、画面上部の`Header / Status Summary`と、`Overview`、`Study`、`Methods`、`Outcomes`、`Evidence`、`Research Relevance`、`Tags / Usage`の7 semantic sectionsで構成する。Headerは独立したresearch data entityではなく、重要情報とstatusを常時確認するためのsummary領域である。表示は`重要情報 → Section要約 → 詳細情報`の順とし、database table、column、foreign key、internal ID構造をユーザーへ露出しない。
+
+`Outcome name`と`Outcome definition / calculation method`は画面上でも分離し、definitionを隠さない。同名Outcomeを直接比較可能または文献内で一意と仮定せず、condition、position、region、layer、time point等が異なる複数のlogical outcomeを扱えるようにする。各structured itemではEvidence availabilityと必要なverification indicatorを確認でき、`Structured item → Evidence detail → Original PDF`へ戻れる導線を持つ方向とする。
+
+まだ抽出・入力していない情報、原著確認後に記載がないと判断した情報、AI抽出済みだが未確認の情報、利用者確認済みの情報は視覚的・意味的に区別し、色だけに依存しない。正確な永続化語彙とschemaは後続Stepで定める。空のoptional fieldsを大量に並べず、Section単位の簡潔なempty stateを使用する一方、重要statusは常時表示可能とする。
+
+Phase 1 fieldsだけを持つ文献も正常に表示でき、既存のLiterature fields、tags、usage historyを引き続き利用できなければならない。Phase 2 structured dataが存在する場合は既存情報を置換せず、対応するsemantic sectionへ追加表示する。詳細設計は[`docs/LITERATURE_DETAIL_IA.md`](docs/LITERATURE_DETAIL_IA.md)を参照する。
+
 ---
 
 ## 21. 完了条件
@@ -721,6 +731,6 @@ Codexは以下を厳守する。
 
 Phase 1はSteps 0〜9がcompleted and pushed、completion assessmentはGO、final regressionは504 tests passedである。Phase 1の検証済みproduction behaviorをPhase 2以降の基盤として保護する。
 
-現在はPhase 2、Current StepはPhase 2-0 Product direction / roadmap freeze、Statusはcurrent step, in progressである。Phase 2-0ではproduction code、database schema、testsを変更しない。
+現在はPhase 2、Phase 2-0 Product direction / roadmap freezeはcompleted and pushedである。Current StepはPhase 2-1 Literature Detail Information Architecture、Statusはcurrent step, in progressである。Phase 2-1ではproduction code、database schema、testsを変更しない。
 
 仕様またはロードマップを変更する場合は、変更理由、既存仕様・データ・テスト・費用への影響を事前に説明し、必要なユーザー承認を得る。

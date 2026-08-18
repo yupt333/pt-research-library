@@ -283,11 +283,11 @@ Completion summary:
 
 Phase 2
 
-## Current Step
+## Completed Phase 2 Steps
 
 ### Phase 2-0: Product direction / roadmap freeze
 
-Status: current step, in progress
+Status: completed and pushed
 
 Scope:
 
@@ -302,21 +302,33 @@ Scope:
 The full product direction and roadmap are recorded in
 `docs/PRODUCT_ROADMAP.md`.
 
+## Current Step
+
+### Phase 2-1: Literature Detail Information Architecture
+
+Status: current step, in progress
+
+Scope:
+
+- Literature Detail semantic architecture
+- Header / Status Summary
+- Overview
+- Study
+- Methods
+- Outcomes
+- Evidence
+- Research Relevance
+- Tags / Usage
+- Phase 1 field mapping
+- future structured field mapping
+- low-fidelity detail wireframes
+- backward compatibility
+- documentation only; no production code, database schema, or test changes
+
 ## Phase 2 Planned Steps
 
 Phase 2 Steps must be performed in the following order. A later Step must not
 be implemented early without an approved roadmap change.
-
-### Phase 2-1: Literature Detail Information Architecture
-
-Status: planned
-
-Includes:
-
-- semantic units for literature detail
-- Overview / Study / Methods / Outcomes / Evidence / Relevance
-- UI display requirements
-- design before schema implementation
 
 ### Phase 2-2: ChatGPT Structured Import Contract v1
 

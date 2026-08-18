@@ -8,10 +8,10 @@
 - Phase 1 completion assessment: GO
 - Phase 1 final regression: 504 tests passed
 - Current phase: Phase 2
-- Current step: Phase 2-0 Product direction / roadmap freeze
+- Current step: Phase 2-1 Literature Detail Information Architecture
 - Current step status: in progress
 
-Phase 2-0は文書化だけを行うStepである。production code、データベーススキーマ、テストは変更せず、Phase 2-1以降の機能を実装しない。
+Phase 2-0はcompleted and pushedである。Phase 2-1は文書化だけを行うStepであり、production code、データベーススキーマ、テストは変更せず、Phase 2-2以降の機能を実装しない。
 
 ## 2. Product Goal
 
@@ -368,6 +368,7 @@ Research Projectへ関連付け
 
 Phase 2-1ではGUI frameworkを導入せず、文献詳細を次の意味単位へ整理するinformation architectureを固定する。
 
+- Header / Status Summary（独立したresearch data entityではなく、画面上部のsummary領域）
 - Overview
 - Study
 - Methods
@@ -375,6 +376,8 @@ Phase 2-1ではGUI frameworkを導入せず、文献詳細を次の意味単位�
 - Evidence
 - Research relevance
 - Tags / Usage
+
+表示階層は`重要情報 → Section要約 → 詳細情報`とする。内部のdatabase table、column、foreign key、ID構造をユーザーへ露出せず、Outcome nameとdefinition / calculation、Evidence availability、AI情報のverification、未抽出・原著に記載なし・AI未確認・利用者確認済みの違いを見落としにくくする。Phase 1 fieldsだけを持つ文献も正常に表示できなければならない。詳細は[`LITERATURE_DETAIL_IA.md`](LITERATURE_DETAIL_IA.md)を参照する。
 
 本格GUIはStructured Data、Evidence、Comparisonのデータ構造が固まった後に実装する。CLIを最終製品UIとはみなさない。
 
@@ -384,7 +387,7 @@ Phase 2では次の順序を既定の開発順序として固定する。Stepを
 
 ### Phase 2-0: Product direction / roadmap freeze
 
-Status: current step, in progress
+Status: completed and pushed
 
 - 製品方向、設計原則、ロードマップの文書化
 - docs / specification / workflowのみ
@@ -392,12 +395,16 @@ Status: current step, in progress
 
 ### Phase 2-1: Literature Detail Information Architecture
 
-Status: planned
+Status: current step, in progress
 
 - 文献詳細の意味単位設計
-- Overview / Study / Methods / Outcomes / Evidence / Relevance
+- Header / Status Summary + Overview / Study / Methods / Outcomes / Evidence / Research Relevance / Tags / Usage
+- Phase 1全fieldsと将来structured fieldsの表示mapping
+- progressive disclosure、empty state、verification、Evidence / Original PDF導線
+- Phase 1-only文献とのbackward compatibility
+- 3ケースのlow-fidelity detail wireframe
 - UI表示要件の固定
-- schema実装前の設計Step
+- documentation onlyのschema実装前設計Step
 
 ### Phase 2-2: ChatGPT Structured Import Contract v1
 
