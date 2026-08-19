@@ -302,11 +302,9 @@ Scope:
 The full product direction and roadmap are recorded in
 `docs/PRODUCT_ROADMAP.md`.
 
-## Current Step
-
 ### Phase 2-1: Literature Detail Information Architecture
 
-Status: current step, in progress
+Status: completed and pushed
 
 Scope:
 
@@ -325,22 +323,42 @@ Scope:
 - backward compatibility
 - documentation only; no production code, database schema, or test changes
 
+The full information architecture is recorded in
+`docs/LITERATURE_DETAIL_IA.md`.
+
+## Current Step
+
+### Phase 2-2: ChatGPT Structured Import Contract v1
+
+Status: current step, in progress
+
+Scope:
+
+- JSON structured import contract
+- analysis metadata
+- bibliography
+- study
+- five methods subgroups
+- outcomes and results
+- limitations
+- concepts
+- research relevance
+- evidence
+- availability vocabulary
+- verification vocabulary
+- payload-local ID and Evidence reference integrity
+- synthetic valid JSON example
+- manual ChatGPT Output Instructions v1
+- documentation only; no OpenAI API, external API, database schema, parser,
+  Import Preview implementation, production code, dependency, or test changes
+
+The full contract is recorded in
+`docs/STRUCTURED_IMPORT_CONTRACT_V1.md`.
+
 ## Phase 2 Planned Steps
 
 Phase 2 Steps must be performed in the following order. A later Step must not
 be implemented early without an approved roadmap change.
-
-### Phase 2-2: ChatGPT Structured Import Contract v1
-
-Status: planned
-
-Includes:
-
-- unified ChatGPT output format
-- bibliography / study / methods / outcomes / limitations / concepts / evidence
-- unknown / not reported / unverified semantics
-- evaluation of a machine-readable format such as JSON
-- no OpenAI API
 
 ### Phase 2-3: Structured Research Data Model
 

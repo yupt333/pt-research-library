@@ -8,10 +8,10 @@
 - Phase 1 completion assessment: GO
 - Phase 1 final regression: 504 tests passed
 - Current phase: Phase 2
-- Current step: Phase 2-1 Literature Detail Information Architecture
+- Current step: Phase 2-2 ChatGPT Structured Import Contract v1
 - Current step status: in progress
 
-Phase 2-0はcompleted and pushedである。Phase 2-1は文書化だけを行うStepであり、production code、データベーススキーマ、テストは変更せず、Phase 2-2以降の機能を実装しない。
+Phase 2-0とPhase 2-1はcompleted and pushedである。Phase 2-2は文書化だけを行うStepであり、production code、データベーススキーマ、parser、Import UI、API、テストは変更せず、Phase 2-3以降の機能を実装しない。
 
 ## 2. Product Goal
 
@@ -395,7 +395,7 @@ Status: completed and pushed
 
 ### Phase 2-1: Literature Detail Information Architecture
 
-Status: current step, in progress
+Status: completed and pushed
 
 - 文献詳細の意味単位設計
 - Header / Status Summary + Overview / Study / Methods / Outcomes / Evidence / Research Relevance / Tags / Usage
@@ -408,13 +408,14 @@ Status: current step, in progress
 
 ### Phase 2-2: ChatGPT Structured Import Contract v1
 
-Status: planned
+Status: current step, in progress
 
-- ChatGPT出力の統一フォーマット策定
-- bibliography / study / methods / outcomes / limitations / concepts / evidence
-- unknown / not reported / unverifiedの扱い
-- JSON等のmachine-readable形式を検討
-- OpenAI APIなし
+- contract version付きJSON v1によるChatGPT出力の統一
+- bibliography / study / methods / outcomes / results / limitations / concepts / research relevance / evidence
+- availabilityとverificationを分離したmissing / unverified semantics
+- payload-local IDsとEvidence reference integrity
+- 完全合成のvalid JSON exampleと手動ChatGPT出力指示
+- documentation only。OpenAI API、database schema、parser、Import Preview implementationなし
 
 ### Phase 2-3: Structured Research Data Model
 

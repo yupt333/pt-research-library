@@ -681,6 +681,18 @@ AI抽出値は、可能な限り`Structured value → Evidence reference → PDF
 
 Phase 1 fieldsだけを持つ文献も正常に表示でき、既存のLiterature fields、tags、usage historyを引き続き利用できなければならない。Phase 2 structured dataが存在する場合は既存情報を置換せず、対応するsemantic sectionへ追加表示する。詳細設計は[`docs/LITERATURE_DETAIL_IA.md`](docs/LITERATURE_DETAIL_IA.md)を参照する。
 
+### 20.11 ChatGPT Structured Import Contract v1
+
+ChatGPTからPT Research Libraryへ解析結果を受け渡すPhase 2-2の正式なmachine-readable形式は、UTF-8のvalid JSONとする。OpenAI APIは使用せず、手動でChatGPTから取得したJSONを将来のImport Previewで利用者が確認する。contract versionは`pt_research_library_structured_import_v1`とする。
+
+このcontractはDB insert / update command、SQL schema、internal database representationではない。ChatGPTはSQLite internal IDを出力せず、Import対象文献の特定、保存先、target matchingはImport Preview側で利用者が確認する。自動overwrite、自動mergeを禁止する。
+
+Source-orientedな各factは、値そのものと`availability`、`verification`、Evidenceへのpayload-local referenceを分離する。ChatGPT raw outputのverificationは`ai_unverified`とし、ChatGPTが`user_verified`を自己申告してはならない。これはPhase 1のliterature-level `verification_status`とは別概念であり、自動上書きしない。
+
+Outcome name、Outcome definition、calculation methodは分離し、同名Outcomeを同一または直接比較可能とみなさない。Outcome、Result、Limitation、Concept、Evidenceの識別子は1 payload内だけで有効なlocal IDとし、Evidence参照は同じpayload内の実在するEvidenceへ解決できなければならない。
+
+Bibliography、Study、Methods、Outcomes、author-reported Limitations、Evidence等のsource factsと、AI-inferred Limitations、Concept解釈、Research Relevance等のinterpretationを混同しない。欠損値、identifier、数値、条件、原文quote、Evidence locationを推測で補完せず、`availability`とwarningで未抽出、原著に記載なし、曖昧、非該当を区別する。詳細なfield、vocabulary、validation、forward compatibility、手動ChatGPT出力指示、合成JSON例は[`docs/STRUCTURED_IMPORT_CONTRACT_V1.md`](docs/STRUCTURED_IMPORT_CONTRACT_V1.md)を正式な参照先とする。
+
 ---
 
 ## 21. 完了条件
@@ -731,6 +743,6 @@ Codexは以下を厳守する。
 
 Phase 1はSteps 0〜9がcompleted and pushed、completion assessmentはGO、final regressionは504 tests passedである。Phase 1の検証済みproduction behaviorをPhase 2以降の基盤として保護する。
 
-現在はPhase 2、Phase 2-0 Product direction / roadmap freezeはcompleted and pushedである。Current StepはPhase 2-1 Literature Detail Information Architecture、Statusはcurrent step, in progressである。Phase 2-1ではproduction code、database schema、testsを変更しない。
+現在はPhase 2であり、Phase 2-0 Product direction / roadmap freezeとPhase 2-1 Literature Detail Information Architectureはcompleted and pushedである。Current StepはPhase 2-2 ChatGPT Structured Import Contract v1、Statusはcurrent step, in progressである。Phase 2-2はdocumentation onlyであり、production code、database schema、parser、Import UI、API、testsを変更しない。
 
 仕様またはロードマップを変更する場合は、変更理由、既存仕様・データ・テスト・費用への影響を事前に説明し、必要なユーザー承認を得る。

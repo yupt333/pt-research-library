@@ -1,0 +1,1165 @@
+{
+  "contract_version": "pt_research_library_structured_import_v1",
+  "analysis_metadata": {
+    "source_document_name": "synthetic_contract_example.pdf",
+    "analysis_scope": "partial_text",
+    "analysis_warnings": [
+      "This payload is a completely synthetic contract example, not an analysis of a real publication.",
+      "Only synthetic excerpts represented by the Evidence objects were treated as inspected."
+    ]
+  },
+  "bibliography": {
+    "title": {
+      "value": "Synthetic Literature for Structured Import Contract",
+      "availability": "reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": "Explicitly synthetic title."
+    },
+    "authors": {
+      "value": null,
+      "availability": "not_reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": "The complete synthetic title block was inspected and contained no authors."
+    },
+    "journal": {
+      "value": null,
+      "availability": "not_reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": "The complete synthetic title block was inspected and contained no journal."
+    },
+    "publication_year": {
+      "value": null,
+      "availability": "not_reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": "The complete synthetic title block was inspected and contained no publication year."
+    },
+    "volume": {
+      "value": null,
+      "availability": "not_applicable",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": null
+    },
+    "issue": {
+      "value": null,
+      "availability": "not_applicable",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": null
+    },
+    "pages": {
+      "value": null,
+      "availability": "not_applicable",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": null
+    },
+    "doi": {
+      "value": null,
+      "availability": "not_applicable",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": "No DOI exists; no placeholder identifier was generated."
+    },
+    "pmid": {
+      "value": null,
+      "availability": "not_applicable",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": "No PMID exists; no placeholder identifier was generated."
+    },
+    "url": {
+      "value": null,
+      "availability": "not_applicable",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": "No URL exists; no placeholder URL was generated."
+    },
+    "language": {
+      "value": "English",
+      "availability": "reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": null
+    },
+    "publication_type": {
+      "value": "synthetic contract example",
+      "availability": "reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": "This is not a real publication type."
+    },
+    "abstract": {
+      "value": null,
+      "availability": "not_extracted",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": null
+    }
+  },
+  "study": {
+    "study_design": {
+      "value": "synthetic two-condition measurement example",
+      "availability": "reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": "Synthetic design label."
+    },
+    "research_objective": {
+      "value": "Demonstrate a structured import payload with condition-specific outcomes.",
+      "availability": "reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": null
+    },
+    "population": {
+      "value": "synthetic adult participants",
+      "availability": "reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": "No real participants are represented."
+    },
+    "sample_size": {
+      "value": 12,
+      "availability": "reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": "Synthetic value for contract illustration only."
+    },
+    "demographics": {
+      "value": null,
+      "availability": "not_extracted",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": "The synthetic excerpts do not define demographics."
+    },
+    "condition_diagnosis": {
+      "value": null,
+      "availability": "not_applicable",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": "No clinical diagnosis applies to the synthetic example."
+    },
+    "health_status": {
+      "value": null,
+      "availability": "unclear",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": "No health-status statement appears in the inspected synthetic excerpt."
+    },
+    "inclusion_criteria": {
+      "value": null,
+      "availability": "not_extracted",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": null
+    },
+    "exclusion_criteria": {
+      "value": null,
+      "availability": "not_extracted",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": null
+    },
+    "group_allocation": {
+      "value": {
+        "groups": ["synthetic_group_1"],
+        "conditions": ["synthetic_condition_a", "synthetic_condition_b"]
+      },
+      "availability": "reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": "One synthetic group was observed under two synthetic conditions."
+    },
+    "study_setting": {
+      "value": null,
+      "availability": "not_extracted",
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": null
+    }
+  },
+  "methods": {
+    "measurement_imaging": {
+      "measurement": {
+        "value": "synthetic displacement measurement",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": null
+      },
+      "imaging_modality": {
+        "value": "synthetic imaging modality",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": "Not a real device or modality."
+      },
+      "imaging_condition": {
+        "value": null,
+        "availability": "unclear",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "device": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "probe": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "probe_orientation": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "frame_rate": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "No frame rate was inferred."
+      },
+      "sampling_condition": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "calibration_scale": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "roi": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "No ROI size or definition was guessed."
+      }
+    },
+    "body_condition": {
+      "body_position": {
+        "value": "synthetic seated position",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": null
+      },
+      "joint_position": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "joint_angle": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "No angle was guessed."
+      },
+      "limb_position": {
+        "value": null,
+        "availability": "unclear",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "contraction_type": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "muscle_activation_condition": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "load": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "No load was guessed."
+      },
+      "weight_bearing_condition": {
+        "value": null,
+        "availability": "unclear",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      }
+    },
+    "task_protocol": {
+      "task": {
+        "value": "synthetic repeated movement task",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": null
+      },
+      "movement": {
+        "value": "synthetic linear movement",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": null
+      },
+      "range": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "speed": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "repetition": {
+        "value": 3,
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": "Synthetic count."
+      },
+      "duration": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "rest": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "trial_number": {
+        "value": 3,
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": "Synthetic count."
+      }
+    },
+    "analysis": {
+      "analysis_method": {
+        "value": "synthetic difference calculation",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": null
+      },
+      "tracking_algorithm": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "No tracking algorithm was invented."
+      },
+      "preprocessing": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "reference_frame_baseline": {
+        "value": "synthetic baseline observation",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": null
+      },
+      "calculation_method": {
+        "value": "synthetic final position minus synthetic baseline position",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": null
+      },
+      "roi_handling": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "quality_control": {
+        "value": "synthetic manual review of each trial",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_1"],
+        "note": null
+      }
+    },
+    "validation_statistics": {
+      "validation": {
+        "value": "synthetic repeatability illustration",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_2"],
+        "note": null
+      },
+      "reliability_method": {
+        "value": "synthetic repeated-measure reliability assessment",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_2"],
+        "note": null
+      },
+      "statistical_analysis": {
+        "value": "synthetic descriptive and reliability statistics",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_2"],
+        "note": null
+      },
+      "icc": {
+        "value": {
+          "metric": "ICC",
+          "metric_value": 0.9,
+          "model_definition": "synthetic two-way model"
+        },
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_2"],
+        "note": "Synthetic statistic, not a real research finding."
+      },
+      "sem": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "mdc": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "mcid": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "agreement_analysis": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "other_statistical_method": {
+        "value": null,
+        "availability": "not_extracted",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      }
+    }
+  },
+  "outcomes": [
+    {
+      "outcome_id": "outcome_1",
+      "name": {
+        "value": "Synthetic Displacement",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_2"],
+        "note": null
+      },
+      "definition": {
+        "value": "Synthetic position change relative to a synthetic baseline.",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_2"],
+        "note": null
+      },
+      "calculation_method": {
+        "value": "Synthetic final position minus synthetic baseline position.",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_2"],
+        "note": null
+      },
+      "unit": {
+        "value": "synthetic_unit",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_2"],
+        "note": "Nonphysical unit used only for this example."
+      },
+      "context": {
+        "condition": {
+          "value": "synthetic_condition_a",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_2"],
+          "note": null
+        },
+        "group": {
+          "value": "synthetic_group_1",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_2"],
+          "note": null
+        },
+        "body_position": {
+          "value": "synthetic seated position",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_2"],
+          "note": null
+        },
+        "task": {
+          "value": "synthetic repeated movement task",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_2"],
+          "note": null
+        },
+        "load": {
+          "value": null,
+          "availability": "not_extracted",
+          "verification": "ai_unverified",
+          "evidence_refs": [],
+          "note": null
+        },
+        "region": {
+          "value": "synthetic_region_a",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_2"],
+          "note": null
+        },
+        "layer": {
+          "value": null,
+          "availability": "not_applicable",
+          "verification": "ai_unverified",
+          "evidence_refs": [],
+          "note": null
+        },
+        "time_point": {
+          "value": "synthetic_time_point_1",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_2"],
+          "note": null
+        }
+      },
+      "results": [
+        {
+          "result_id": "result_1",
+          "condition_or_comparison": {
+            "value": "synthetic_condition_a within-group result",
+            "availability": "reported",
+            "verification": "ai_unverified",
+            "evidence_refs": ["evidence_2"],
+            "note": null
+          },
+          "result": {
+            "value": 10,
+            "availability": "reported",
+            "verification": "ai_unverified",
+            "evidence_refs": ["evidence_2"],
+            "note": "Synthetic result value."
+          },
+          "statistics": [
+            {
+              "metric_name": {
+                "value": "synthetic mean",
+                "availability": "reported",
+                "verification": "ai_unverified",
+                "evidence_refs": ["evidence_2"],
+                "note": null
+              },
+              "metric_value": {
+                "value": 10,
+                "availability": "reported",
+                "verification": "ai_unverified",
+                "evidence_refs": ["evidence_2"],
+                "note": null
+              },
+              "unit": {
+                "value": "synthetic_unit",
+                "availability": "reported",
+                "verification": "ai_unverified",
+                "evidence_refs": ["evidence_2"],
+                "note": null
+              },
+              "model_definition": {
+                "value": null,
+                "availability": "not_applicable",
+                "verification": "ai_unverified",
+                "evidence_refs": [],
+                "note": null
+              },
+              "confidence_interval": {
+                "value": null,
+                "availability": "not_extracted",
+                "verification": "ai_unverified",
+                "evidence_refs": [],
+                "note": null
+              },
+              "condition": {
+                "value": "synthetic_condition_a",
+                "availability": "reported",
+                "verification": "ai_unverified",
+                "evidence_refs": ["evidence_2"],
+                "note": null
+              },
+              "verification": "ai_unverified",
+              "evidence_refs": ["evidence_2"]
+            }
+          ],
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_2"]
+        }
+      ],
+      "validation_information": [
+        {
+          "metric_name": {
+            "value": "ICC",
+            "availability": "reported",
+            "verification": "ai_unverified",
+            "evidence_refs": ["evidence_2"],
+            "note": null
+          },
+          "metric_value": {
+            "value": 0.9,
+            "availability": "reported",
+            "verification": "ai_unverified",
+            "evidence_refs": ["evidence_2"],
+            "note": "Synthetic value."
+          },
+          "unit": {
+            "value": null,
+            "availability": "not_applicable",
+            "verification": "ai_unverified",
+            "evidence_refs": [],
+            "note": null
+          },
+          "model_definition": {
+            "value": "synthetic two-way model",
+            "availability": "reported",
+            "verification": "ai_unverified",
+            "evidence_refs": ["evidence_2"],
+            "note": "Synthetic model label."
+          },
+          "confidence_interval": {
+            "value": {
+              "level": "95%",
+              "lower": 0.8,
+              "upper": 0.95
+            },
+            "availability": "reported",
+            "verification": "ai_unverified",
+            "evidence_refs": ["evidence_2"],
+            "note": "Entirely synthetic interval."
+          },
+          "condition": {
+            "value": "synthetic_condition_a",
+            "availability": "reported",
+            "verification": "ai_unverified",
+            "evidence_refs": ["evidence_2"],
+            "note": null
+          },
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_2"]
+        }
+      ],
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_2"]
+    },
+    {
+      "outcome_id": "outcome_2",
+      "name": {
+        "value": "Synthetic Displacement",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_3"],
+        "note": "Same name as outcome_1 but retained as a separate logical Outcome."
+      },
+      "definition": {
+        "value": "Synthetic position change relative to a synthetic baseline.",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_3"],
+        "note": null
+      },
+      "calculation_method": {
+        "value": "Synthetic final position minus synthetic baseline position.",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_3"],
+        "note": null
+      },
+      "unit": {
+        "value": "synthetic_unit",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": ["evidence_3"],
+        "note": null
+      },
+      "context": {
+        "condition": {
+          "value": "synthetic_condition_b",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_3"],
+          "note": null
+        },
+        "group": {
+          "value": "synthetic_group_1",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_3"],
+          "note": null
+        },
+        "body_position": {
+          "value": "synthetic seated position",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_3"],
+          "note": null
+        },
+        "task": {
+          "value": "synthetic repeated movement task",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_3"],
+          "note": null
+        },
+        "load": {
+          "value": null,
+          "availability": "not_extracted",
+          "verification": "ai_unverified",
+          "evidence_refs": [],
+          "note": null
+        },
+        "region": {
+          "value": "synthetic_region_b",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_3"],
+          "note": null
+        },
+        "layer": {
+          "value": null,
+          "availability": "not_applicable",
+          "verification": "ai_unverified",
+          "evidence_refs": [],
+          "note": null
+        },
+        "time_point": {
+          "value": "synthetic_time_point_1",
+          "availability": "reported",
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_3"],
+          "note": null
+        }
+      },
+      "results": [
+        {
+          "result_id": "result_2",
+          "condition_or_comparison": {
+            "value": "synthetic_condition_b within-group result",
+            "availability": "reported",
+            "verification": "ai_unverified",
+            "evidence_refs": ["evidence_3"],
+            "note": null
+          },
+          "result": {
+            "value": 12,
+            "availability": "reported",
+            "verification": "ai_unverified",
+            "evidence_refs": ["evidence_3"],
+            "note": "Synthetic result value."
+          },
+          "statistics": [
+            {
+              "metric_name": {
+                "value": "synthetic mean",
+                "availability": "reported",
+                "verification": "ai_unverified",
+                "evidence_refs": ["evidence_3"],
+                "note": null
+              },
+              "metric_value": {
+                "value": 12,
+                "availability": "reported",
+                "verification": "ai_unverified",
+                "evidence_refs": ["evidence_3"],
+                "note": null
+              },
+              "unit": {
+                "value": "synthetic_unit",
+                "availability": "reported",
+                "verification": "ai_unverified",
+                "evidence_refs": ["evidence_3"],
+                "note": null
+              },
+              "model_definition": {
+                "value": null,
+                "availability": "not_applicable",
+                "verification": "ai_unverified",
+                "evidence_refs": [],
+                "note": null
+              },
+              "confidence_interval": {
+                "value": null,
+                "availability": "not_extracted",
+                "verification": "ai_unverified",
+                "evidence_refs": [],
+                "note": null
+              },
+              "condition": {
+                "value": "synthetic_condition_b",
+                "availability": "reported",
+                "verification": "ai_unverified",
+                "evidence_refs": ["evidence_3"],
+                "note": null
+              },
+              "verification": "ai_unverified",
+              "evidence_refs": ["evidence_3"]
+            }
+          ],
+          "verification": "ai_unverified",
+          "evidence_refs": ["evidence_3"]
+        }
+      ],
+      "validation_information": [],
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_3"]
+    }
+  ],
+  "limitations": [
+    {
+      "limitation_id": "limitation_1",
+      "text": "The synthetic observation window was intentionally limited.",
+      "basis": "author_reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_4"],
+      "note": "Author-reported within the synthetic source."
+    },
+    {
+      "limitation_id": "limitation_2",
+      "text": "Differences between the two synthetic conditions may limit direct comparison.",
+      "basis": "ai_inferred",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_2", "evidence_3"],
+      "note": "AI interpretation, not an author statement."
+    }
+  ],
+  "concepts": [
+    {
+      "concept_id": "concept_1",
+      "name": "Synthetic Displacement",
+      "context": "A synthetic measured change from baseline.",
+      "basis": "source_reported",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_2", "evidence_3"],
+      "note": "This is a research concept, not a Tag."
+    },
+    {
+      "concept_id": "concept_2",
+      "name": "Condition-specific comparability",
+      "context": "Same-name Outcomes remain separate because their conditions and regions differ.",
+      "basis": "ai_inferred",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_2", "evidence_3"],
+      "note": "AI interpretation."
+    }
+  ],
+  "research_relevance": {
+    "summary": {
+      "value": "The synthetic example demonstrates a reviewable transfer format for condition-specific outcomes.",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1", "evidence_2", "evidence_3"],
+      "note": "AI interpretation, not a source fact."
+    },
+    "methodological_relevance": {
+      "value": "The separated method groups could support later comparison of acquisition, body condition, task, analysis, and validation.",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_1"],
+      "note": "AI interpretation."
+    },
+    "clinical_relevance": {
+      "value": null,
+      "verification": "ai_unverified",
+      "evidence_refs": [],
+      "note": "No clinical interpretation is appropriate for a synthetic contract example."
+    },
+    "protocol_relevance": {
+      "value": "The example preserves condition and region so protocol differences remain visible.",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_2", "evidence_3"],
+      "note": "AI interpretation."
+    },
+    "methodological_cautions": {
+      "value": "Do not compare the two numeric results without reviewing their distinct contexts.",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_2", "evidence_3"],
+      "note": "AI interpretation."
+    },
+    "comparison_notes": {
+      "value": "The Outcome names match, but condition and region do not.",
+      "verification": "ai_unverified",
+      "evidence_refs": ["evidence_2", "evidence_3"],
+      "note": "AI interpretation."
+    }
+  },
+  "evidence": [
+    {
+      "evidence_id": "evidence_1",
+      "pdf_page": {
+        "value": 1,
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Synthetic PDF viewer index."
+      },
+      "printed_page": {
+        "value": "S1",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Synthetic printed page label."
+      },
+      "section": {
+        "value": "Synthetic Methods",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "subsection": {
+        "value": "Synthetic Protocol",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "table": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "figure": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "quote_text": {
+        "value": "Synthetic Literature for Structured Import Contract describes twelve synthetic participants completing three synthetic movement trials in two conditions.",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Exact wording from the synthetic source represented by this example."
+      },
+      "note": "Completely synthetic Evidence; the synthetic title block and listed methods excerpt were treated as fully inspected.",
+      "verification": "ai_unverified"
+    },
+    {
+      "evidence_id": "evidence_2",
+      "pdf_page": {
+        "value": 2,
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Synthetic PDF viewer index."
+      },
+      "printed_page": {
+        "value": "S2",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Synthetic printed page label."
+      },
+      "section": {
+        "value": "Synthetic Results",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "subsection": {
+        "value": "Condition A",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "table": {
+        "value": "Synthetic Table A",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Synthetic identifier, not a real Table."
+      },
+      "figure": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "quote_text": {
+        "value": "Synthetic Displacement was 10 synthetic units in synthetic condition A; the synthetic ICC was 0.90 using a synthetic two-way model with a synthetic 95% interval from 0.80 to 0.95.",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Exact wording from the synthetic source represented by this example."
+      },
+      "note": "Completely synthetic Evidence.",
+      "verification": "ai_unverified"
+    },
+    {
+      "evidence_id": "evidence_3",
+      "pdf_page": {
+        "value": 3,
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Synthetic PDF viewer index."
+      },
+      "printed_page": {
+        "value": "S3",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Synthetic printed page label."
+      },
+      "section": {
+        "value": "Synthetic Results",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "subsection": {
+        "value": "Condition B",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "table": {
+        "value": "Synthetic Table B",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Synthetic identifier, not a real Table."
+      },
+      "figure": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "quote_text": {
+        "value": "Synthetic Displacement was 12 synthetic units in synthetic condition B and synthetic region B.",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Exact wording from the synthetic source represented by this example."
+      },
+      "note": "Completely synthetic Evidence.",
+      "verification": "ai_unverified"
+    },
+    {
+      "evidence_id": "evidence_4",
+      "pdf_page": {
+        "value": 4,
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Synthetic PDF viewer index."
+      },
+      "printed_page": {
+        "value": "S4",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Synthetic printed page label."
+      },
+      "section": {
+        "value": "Synthetic Discussion",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "subsection": {
+        "value": "Synthetic Limitations",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "table": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "figure": {
+        "value": null,
+        "availability": "not_applicable",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": null
+      },
+      "quote_text": {
+        "value": "The synthetic observation window was intentionally limited.",
+        "availability": "reported",
+        "verification": "ai_unverified",
+        "evidence_refs": [],
+        "note": "Exact wording from the synthetic source represented by this example."
+      },
+      "note": "Completely synthetic Evidence.",
+      "verification": "ai_unverified"
+    }
+  ]
+}
