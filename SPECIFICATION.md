@@ -693,6 +693,31 @@ Outcome name、Outcome definition、calculation methodは分離し、同名Outco
 
 Bibliography、Study、Methods、Outcomes、author-reported Limitations、Evidence等のsource factsと、AI-inferred Limitations、Concept解釈、Research Relevance等のinterpretationを混同しない。欠損値、identifier、数値、条件、原文quote、Evidence locationを推測で補完せず、`availability`とwarningで未抽出、原著に記載なし、曖昧、非該当を区別する。詳細なfield、vocabulary、validation、forward compatibility、手動ChatGPT出力指示、合成JSON例は[`docs/STRUCTURED_IMPORT_CONTRACT_V1.md`](docs/STRUCTURED_IMPORT_CONTRACT_V1.md)を正式な参照先とする。
 
+### 20.12 Structured Research Data Model
+
+Phase 2-3では、Phase 1の4テーブルと既存データを変更せず、次の6テーブルをadditiveに追加する。
+
+- `schema_migrations`
+- `structured_entities`
+- `structured_fields`
+- `evidence_references`
+- `structured_field_evidence`
+- `structured_entity_evidence`
+
+current structured schema versionは1とし、migration履歴は`schema_migrations`の`MAX(version)`で管理する。`PRAGMA user_version`はPhase 1でopaque valueとして扱われているためschema version管理に使用せず、fresh作成、legacy migration、再起動のいずれでも変更しない。
+
+既存Phase 1 databaseをmigrationする場合は、schema変更より先に既存のverified SQLite backupを必ず作成する。backup先が指定されない場合またはbackupが失敗した場合はmigrationを開始しない。migration 1は単一transaction内で追加テーブルとversion metadataを作成し、失敗時は全変更をrollbackする。fresh databaseはcurrent 10テーブルを一括作成し、migration backupを作成しない。version 1適用済みdatabaseは必須tableの存在を確認して変更せず、より新しいversionはdowngradeせず拒否し、version 1 metadataと必須tableが矛盾するdatabaseはsilent repairしない。
+
+`structured_entities`はStudy、5種類のMethods、Outcome、Result、Limitation、Concept、Research Relevanceを複数保持できるlogical unitである。同一文献内で同じ`entity_type`を複数作成でき、Outcome nameを一意にしない。Resultはparent必須とし、composite foreign keyにより同一Literatureのentityだけをparentにできる。
+
+`structured_fields`はentity内のfieldを`field_key`、`content_role`、`value_json`、`availability`、`verification`、`note`として保持する。同一entity内の`field_key`は一意とする。`source_fact`ではclosed availability vocabularyを必須とし、`reported`だけがnon-NULL `value_json`を持つ。`interpretation`は`availability`をNULLとし、non-NULL `value_json`を持つ。JSON1 extensionには依存せず、JSON textのdecodeとsemantic type validationはPhase 2-4へ委ねる。
+
+`evidence_references`はPDF viewer上の1-based page、誌面page label、section、subsection、Table、Figure、正確な原文quote、note、verificationを保持する。note以外のlocationまたはquoteを最低1つ必要とし、空白だけのEvidenceを許可しない。fieldおよびentityとのmany-to-many linkは専用link tableで保持し、composite foreign keyによりcross-Literature linkを禁止する。
+
+structured itemとEvidenceのverificationは`ai_unverified`または`user_verified`とし、Phase 1のliterature-level `verification_status`とは別に保持する。Literature削除時は対象Literatureのstructured dataだけをcascade deleteし、Entity削除時はchild entity、field、該当linkを、Evidence削除時は該当linkだけをcascade deleteする。
+
+Phase 1 free-textからstructured dataへのautomatic backfill、bibliographyの二重保存、payload-local IDの永続化、`analysis_metadata`のcanonical保存は行わない。Phase 2-3ではstructured CRUD、JSON parser、Import Preview、CLI操作、GUI、Comparison、Research Project、OpenAI APIを実装しない。詳細は[`docs/STRUCTURED_DATA_MODEL.md`](docs/STRUCTURED_DATA_MODEL.md)を正式な参照先とする。
+
 ---
 
 ## 21. 完了条件
@@ -743,6 +768,6 @@ Codexは以下を厳守する。
 
 Phase 1はSteps 0〜9がcompleted and pushed、completion assessmentはGO、final regressionは504 tests passedである。Phase 1の検証済みproduction behaviorをPhase 2以降の基盤として保護する。
 
-現在はPhase 2であり、Phase 2-0 Product direction / roadmap freezeとPhase 2-1 Literature Detail Information Architectureはcompleted and pushedである。Current StepはPhase 2-2 ChatGPT Structured Import Contract v1、Statusはcurrent step, in progressである。Phase 2-2はdocumentation onlyであり、production code、database schema、parser、Import UI、API、testsを変更しない。
+現在はPhase 2であり、Phase 2-0 Product direction / roadmap freeze、Phase 2-1 Literature Detail Information Architecture、Phase 2-2 ChatGPT Structured Import Contract v1はcompleted and pushedである。Current StepはPhase 2-3 Structured Research Data Model、Statusはcurrent step, in progressである。Phase 2-3はadditive SQLite schema、migration metadata、mandatory pre-migration backup、Phase 1 preservation、migration safetyとintegrity testsを対象とし、structured CRUD、parser、Import Preview、CLI操作、GUI、Comparison、Research Project、OpenAI APIを実装しない。
 
 仕様またはロードマップを変更する場合は、変更理由、既存仕様・データ・テスト・費用への影響を事前に説明し、必要なユーザー承認を得る。

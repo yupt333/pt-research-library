@@ -532,7 +532,18 @@ class LiteratureSearchTestCase(unittest.TestCase):
                     """
                 ).fetchall()
             },
-            {"literature", "tags", "literature_tags", "usage_history"},
+            {
+                "literature",
+                "tags",
+                "literature_tags",
+                "usage_history",
+                "schema_migrations",
+                "structured_entities",
+                "structured_fields",
+                "evidence_references",
+                "structured_field_evidence",
+                "structured_entity_evidence",
+            },
         )
         self.assertFalse(
             any(

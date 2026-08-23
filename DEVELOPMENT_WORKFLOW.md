@@ -326,11 +326,9 @@ Scope:
 The full information architecture is recorded in
 `docs/LITERATURE_DETAIL_IA.md`.
 
-## Current Step
-
 ### Phase 2-2: ChatGPT Structured Import Contract v1
 
-Status: current step, in progress
+Status: completed and pushed
 
 Scope:
 
@@ -355,22 +353,35 @@ Scope:
 The full contract is recorded in
 `docs/STRUCTURED_IMPORT_CONTRACT_V1.md`.
 
+## Current Step
+
+### Phase 2-3: Structured Research Data Model
+
+Status: current step, in progress
+
+Scope:
+
+- additive SQLite structured schema
+- `schema_migrations` metadata with current schema version 1
+- no use or modification of `PRAGMA user_version`
+- mandatory verified backup before legacy Phase 1 migration
+- Phase 1 schema, data, IDs, and behavior preservation
+- structured entities and fields for Study / Methods / Outcomes / Results /
+  Limitations / Concepts / Research Relevance
+- source fact and interpretation separation
+- Evidence references and field/entity Evidence links
+- same-Literature foreign-key integrity
+- migration detection, idempotency, rollback, cascade, and corruption tests
+- no structured CRUD, JSON parser, Import Preview, CLI structured-data
+  operation, GUI, Comparison, Research Project, or OpenAI API
+
+The full schema and migration design is recorded in
+`docs/STRUCTURED_DATA_MODEL.md`.
+
 ## Phase 2 Planned Steps
 
 Phase 2 Steps must be performed in the following order. A later Step must not
 be implemented early without an approved roadmap change.
-
-### Phase 2-3: Structured Research Data Model
-
-Status: planned
-
-Includes:
-
-- Study / Methods / Outcomes / Evidence relationships
-- SQLite schema design from the conceptual model
-- migration design
-- Phase 1 data preservation
-- mandatory migration tests
 
 ### Phase 2-4: Structured Data Repository + Import Preview
 

@@ -25,7 +25,10 @@ def run_application(project_root: str | Path) -> None:
         directory.mkdir(exist_ok=True)
 
     database_path = data_directory / _DATABASE_FILENAME
-    initialize_database(database_path)
+    initialize_database(
+        database_path,
+        migration_backup_directory=backup_directory,
+    )
     connection = connect_database(database_path)
     try:
         run_cli(

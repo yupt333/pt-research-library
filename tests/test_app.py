@@ -16,6 +16,20 @@ import src.database as database_module
 from src.database import connect_database, initialize_database
 
 
+CURRENT_TABLES = {
+    "literature",
+    "tags",
+    "literature_tags",
+    "usage_history",
+    "schema_migrations",
+    "structured_entities",
+    "structured_fields",
+    "evidence_references",
+    "structured_field_evidence",
+    "structured_entity_evidence",
+}
+
+
 class TrackingConnection(sqlite3.Connection):
     """SQLite connection that records lifecycle operations."""
 
@@ -133,7 +147,7 @@ class ApplicationTestCase(unittest.TestCase):
             connection.close()
         self.assertEqual(
             table_names,
-            {"literature", "tags", "literature_tags", "usage_history"},
+            CURRENT_TABLES,
         )
 
         runtime_connection = run_cli.call_args.args[0]
@@ -229,6 +243,88 @@ class ApplicationTestCase(unittest.TestCase):
             self.assertTrue(marker.is_file())
             self.assertEqual(marker.read_bytes(), expected_content)
 
+    def test_legacy_database_is_backed_up_then_migrated_on_startup(self) -> None:
+        data_directory = self.project_root / "data"
+        data_directory.mkdir()
+        database_path = data_directory / "pt_research_library.sqlite3"
+        connection = connect_database(database_path)
+        try:
+            connection.executescript(
+                f"BEGIN;\n{database_module._PHASE1_TABLES_SQL}\nCOMMIT;"
+            )
+            connection.execute(
+                "INSERT INTO literature (title) VALUES (?)",
+                ("Synthetic app legacy literature",),
+            )
+            connection.execute("PRAGMA user_version = 805")
+            connection.commit()
+        finally:
+            connection.close()
+
+        with patch.object(app_module, "run_cli") as run_cli:
+            app_module.run_application(self.project_root)
+
+        run_cli.assert_called_once()
+        backup_paths = list((self.project_root / "backups").glob("*.sqlite3"))
+        self.assertEqual(len(backup_paths), 1)
+        backup_connection = sqlite3.connect(backup_paths[0])
+        try:
+            backup_tables = {
+                row[0]
+                for row in backup_connection.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                    """
+                )
+            }
+            self.assertEqual(backup_tables, {
+                "literature",
+                "tags",
+                "literature_tags",
+                "usage_history",
+            })
+            self.assertEqual(
+                backup_connection.execute(
+                    "SELECT id, title FROM literature"
+                ).fetchall(),
+                [(1, "Synthetic app legacy literature")],
+            )
+        finally:
+            backup_connection.close()
+
+        migrated_connection = connect_database(database_path)
+        try:
+            migrated_tables = {
+                row["name"]
+                for row in migrated_connection.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                    """
+                )
+            }
+            self.assertEqual(migrated_tables, CURRENT_TABLES)
+            self.assertEqual(
+                [
+                    tuple(row)
+                    for row in migrated_connection.execute(
+                        "SELECT id, title FROM literature"
+                    ).fetchall()
+                ],
+                [(1, "Synthetic app legacy literature")],
+            )
+            self.assertEqual(
+                migrated_connection.execute(
+                    "PRAGMA user_version"
+                ).fetchone()[0],
+                805,
+            )
+        finally:
+            migrated_connection.close()
+
     def test_runner_uses_project_root_instead_of_current_working_directory(
         self,
     ) -> None:
@@ -320,7 +416,8 @@ class ApplicationTestCase(unittest.TestCase):
 
         self.assertIs(raised.exception, expected)
         initialized.assert_called_once_with(
-            self.project_root / "data" / "pt_research_library.sqlite3"
+            self.project_root / "data" / "pt_research_library.sqlite3",
+            migration_backup_directory=self.project_root / "backups",
         )
         connected.assert_not_called()
         run_cli.assert_not_called()
@@ -343,7 +440,10 @@ class ApplicationTestCase(unittest.TestCase):
             self.project_root / "data" / "pt_research_library.sqlite3"
         )
         self.assertIs(raised.exception, expected)
-        initialized.assert_called_once_with(database_path)
+        initialized.assert_called_once_with(
+            database_path,
+            migration_backup_directory=self.project_root / "backups",
+        )
         connected.assert_called_once_with(database_path)
         run_cli.assert_not_called()
 
