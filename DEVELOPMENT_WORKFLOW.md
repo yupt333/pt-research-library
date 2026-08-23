@@ -353,11 +353,11 @@ Scope:
 The full contract is recorded in
 `docs/STRUCTURED_IMPORT_CONTRACT_V1.md`.
 
-## Current Step
-
 ### Phase 2-3: Structured Research Data Model
 
-Status: current step, in progress
+Status: completed and pushed
+
+Full regression at completion: 538 tests passed
 
 Scope:
 
@@ -378,24 +378,37 @@ Scope:
 The full schema and migration design is recorded in
 `docs/STRUCTURED_DATA_MODEL.md`.
 
+## Current Step
+
+### Phase 2-4: Structured Data Repository + Import Preview
+
+Status: current step, in progress
+
+Scope:
+
+- structured repository CRUD
+- Contract v1 parser and strict validation
+- explicit Literature target selection
+- bibliography comparison without automatic update
+- Import Preview with zero DB writes
+- user confirmation before save
+- payload-local ID to generated SQLite ID mapping
+- Evidence reference resolution and canonical links
+- atomic full-import transaction and rollback
+- existing structured-data block with no merge or overwrite
+- CLI menu 11 structured JSON workflow
+- local single-user operation
+- zero additional cost
+- no network, API, cloud, server, or external dependency
+- schema unchanged at structured schema version 1
+
+The full workflow is recorded in
+`docs/STRUCTURED_IMPORT_WORKFLOW.md`.
+
 ## Phase 2 Planned Steps
 
 Phase 2 Steps must be performed in the following order. A later Step must not
 be implemented early without an approved roadmap change.
-
-### Phase 2-4: Structured Data Repository + Import Preview
-
-Status: planned
-
-Includes:
-
-- CRUD for the new structures
-- ChatGPT result parser
-- validation
-- Import Preview
-- user confirmation before save
-- unverified initial state for AI-derived information
-- no API
 
 ### Phase 2-5: Evidence Reference
 

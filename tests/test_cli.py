@@ -1,7 +1,9 @@
 """Tests for the Step 8 interactive CLI."""
 
 import codecs
+import copy
 import csv
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -37,6 +39,7 @@ from src.repository import (
     update_usage_history,
 )
 from src.search import search_literature
+from src.structured_repository import create_structured_entity
 
 
 _SEARCH_FIELDS = (
@@ -452,6 +455,46 @@ class CliTestCase(unittest.TestCase):
             Literature(title=title, **values),
         )
 
+    def write_structured_import_json(
+        self,
+        *,
+        data: dict[str, object] | None = None,
+        filename: str = "structured import.json",
+    ) -> Path:
+        example_path = (
+            Path(__file__).resolve().parent.parent
+            / "docs"
+            / "examples"
+            / "structured_import_v1.example.json"
+        )
+        payload = (
+            json.loads(example_path.read_text(encoding="utf-8"))
+            if data is None
+            else data
+        )
+        path = self.directory / filename
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        return path
+
+    @staticmethod
+    def structured_row_counts(
+        connection: sqlite3.Connection,
+    ) -> dict[str, int]:
+        return {
+            table: connection.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0]
+            for table in (
+                "structured_entities",
+                "structured_fields",
+                "evidence_references",
+                "structured_field_evidence",
+                "structured_entity_evidence",
+            )
+        }
+
     def populate_search_records(self) -> tuple[int, int]:
         matching_id = self.add_record(
             "肩関節 %_\\ CLI検索対象",
@@ -754,7 +797,7 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("8. 文献詳細", outputs[0])
         self.assertIn("9. CSV出力", outputs[0])
         self.assertIn("10. SQLiteバックアップ", outputs[0])
-        self.assertNotIn("11. ", outputs[0])
+        self.assertIn("11. ChatGPT構造化JSON取込", outputs[0])
         self.assertIn("0. 終了", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
@@ -771,13 +814,13 @@ class CliTestCase(unittest.TestCase):
 
     def test_invalid_empty_and_many_choices_loop_without_recursion(self) -> None:
         invalid_count = 1200
-        actions = ["", "invalid", *(["11"] * invalid_count), "0"]
+        actions = ["", "invalid", *(["12"] * invalid_count), "0"]
 
         _, feeder, outputs = self.run_with_actions(actions)
 
         error_message = (
             "入力エラー: "
-            "0、1、2、3、4、5、6、7、8、9、10のいずれかを選択してください。"
+            "0、1、2、3、4、5、6、7、8、9、10、11のいずれかを選択してください。"
         )
         self.assertEqual(
             outputs.count(error_message),
@@ -10646,7 +10689,7 @@ class CliTestCase(unittest.TestCase):
         invalid_count = 1200
         feeder = InputFeeder(
             [
-                "11",
+                "12",
                 "7",
                 "5",
                 "invalid",
@@ -12720,7 +12763,7 @@ class CliTestCase(unittest.TestCase):
                     self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
 
     def test_csv_submenu_contract_default_path_and_unset_search(self) -> None:
-        feeder = InputFeeder(["9", "3", "2", "1", "0", "11", "0"])
+        feeder = InputFeeder(["9", "3", "2", "1", "0", "12", "0"])
         outputs: list[str] = []
 
         with patch.object(
@@ -13808,6 +13851,11 @@ class CliTestCase(unittest.TestCase):
                 return_value=False,
             ) as csv_exported,
             patch.object(cli_module, "_run_database_backup") as backed_up,
+            patch.object(
+                cli_module,
+                "_run_structured_import",
+                return_value=False,
+            ) as structured_imported,
         ):
             result = run_cli(
                 self.connection,
@@ -13827,12 +13875,12 @@ class CliTestCase(unittest.TestCase):
             "8. 文献詳細",
             "9. CSV出力",
             "10. SQLiteバックアップ",
+            "11. ChatGPT構造化JSON取込",
             "0. 終了",
         )
         for option in expected_options:
             with self.subTest(option=option):
                 self.assertIn(option, outputs[0])
-        self.assertNotIn("11. ", outputs[0])
         listed.assert_called_once_with(self.connection)
         for flow in (
             searched,
@@ -13860,8 +13908,176 @@ class CliTestCase(unittest.TestCase):
             outputs.append,
             "backups",
         )
-        self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 1)
+        structured_imported.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+        )
+        self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 0)
         self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+
+    def test_structured_import_target_id_and_file_errors_return_to_menu(
+        self,
+    ) -> None:
+        literature_id = self.add_record(
+            "Synthetic Literature for Structured Import Contract"
+        )
+        invalid_json_path = self.directory / "invalid import.json"
+        invalid_json_path.write_text("{invalid", encoding="utf-8")
+        missing_path = self.directory / "missing import.json"
+        actions = [
+            "11",
+            "abc",
+            "11",
+            "99999",
+            "11",
+            str(literature_id),
+            f"'{missing_path}'",
+            "11",
+            str(literature_id),
+            f"'{invalid_json_path}'",
+            "0",
+        ]
+
+        _, feeder, outputs = self.run_with_actions(actions)
+
+        self.assertEqual(len(feeder.prompts), len(actions))
+        text = "\n".join(outputs)
+        self.assertIn("Literature IDは1以上のASCII数字", text)
+        self.assertIn("対象Literatureが見つかりません。", outputs)
+        self.assertIn("JSON file読込エラー:", text)
+        self.assertIn("JSON validation error:", text)
+        self.assertEqual(
+            self.structured_row_counts(self.connection),
+            {
+                "structured_entities": 0,
+                "structured_fields": 0,
+                "evidence_references": 0,
+                "structured_field_evidence": 0,
+                "structured_entity_evidence": 0,
+            },
+        )
+
+    def test_structured_import_preview_and_cancel_write_nothing(self) -> None:
+        literature_id = self.add_record(
+            "Synthetic Literature for Structured Import Contract",
+            authors="Existing author",
+            verification_status="確認済み",
+        )
+        json_path = self.write_structured_import_json()
+        literature_before = get_literature(self.connection, literature_id)
+
+        _, feeder, outputs = self.run_with_actions(
+            [
+                "11",
+                str(literature_id),
+                f"'{json_path}'",
+                "invalid",
+                "0",
+                "0",
+            ]
+        )
+
+        self.assertEqual(len(feeder.prompts), 6)
+        output = "\n".join(outputs)
+        self.assertIn("Import Preview", output)
+        self.assertIn(f"ID: {literature_id}", output)
+        self.assertIn("analysis_scope: partial_text", output)
+        self.assertIn("Study: 1", output)
+        self.assertIn("Methods: 5", output)
+        self.assertIn("Outcome: 2", output)
+        self.assertIn("Evidence: 4", output)
+        self.assertIn("ai_unverified", output)
+        self.assertIn("bibliography", output)
+        self.assertIn("import-only metadata", output)
+        self.assertIn(cli_module._INVALID_CONFIRMATION_MESSAGE, outputs)
+        self.assertIn("構造化JSONを保存せず戻ります。", outputs)
+        self.assertEqual(
+            self.structured_row_counts(self.connection),
+            {table: 0 for table in self.structured_row_counts(self.connection)},
+        )
+        self.assertEqual(get_literature(self.connection, literature_id), literature_before)
+
+    def test_structured_import_confirm_saves_atomic_mapping(self) -> None:
+        literature_id = self.add_record(
+            "Synthetic Literature for Structured Import Contract",
+            authors="Existing author",
+            verification_status="一部確認",
+        )
+        json_path = self.write_structured_import_json()
+
+        _, feeder, outputs = self.run_with_actions(
+            [
+                "11",
+                str(literature_id),
+                str(json_path).replace(" ", "\\ "),
+                "1",
+                "0",
+            ]
+        )
+
+        self.assertEqual(len(feeder.prompts), 5)
+        self.assertIn("構造化JSONを保存しました。", outputs)
+        counts = self.structured_row_counts(self.connection)
+        self.assertEqual(counts["structured_entities"], 15)
+        self.assertEqual(counts["structured_fields"], 96)
+        self.assertEqual(counts["evidence_references"], 4)
+        literature = get_literature(self.connection, literature_id)
+        self.assertEqual(literature.authors, "Existing author")
+        self.assertEqual(literature.verification_status, "一部確認")
+        self.assertEqual(
+            self.connection.execute("PRAGMA foreign_key_check").fetchall(), []
+        )
+
+    def test_structured_import_blocked_preview_never_prompts_to_save(self) -> None:
+        literature_id = self.add_record(
+            "Synthetic Literature for Structured Import Contract"
+        )
+        create_structured_entity(self.connection, literature_id, "study")
+        json_path = self.write_structured_import_json()
+        before = self.structured_row_counts(self.connection)
+
+        _, feeder, outputs = self.run_with_actions(
+            ["11", str(literature_id), f"'{json_path}'", "0"]
+        )
+
+        self.assertEqual(len(feeder.prompts), 4)
+        output = "\n".join(outputs)
+        self.assertIn("保存不可", output)
+        self.assertIn("merge / overwrite", output)
+        self.assertIn("保存不可のため確認menuへ進みません。", outputs)
+        self.assertNotIn(cli_module._STRUCTURED_IMPORT_CONFIRMATION_MENU, outputs)
+        self.assertEqual(self.structured_row_counts(self.connection), before)
+
+    def test_structured_import_identifier_conflict_blocks_confirmation(self) -> None:
+        literature_id = self.add_record(
+            "Synthetic Literature for Structured Import Contract",
+            doi="10.1000/existing",
+        )
+        example_path = (
+            Path(__file__).resolve().parent.parent
+            / "docs"
+            / "examples"
+            / "structured_import_v1.example.json"
+        )
+        data = copy.deepcopy(json.loads(example_path.read_text(encoding="utf-8")))
+        data["bibliography"]["doi"].update(
+            value="10.1000/payload", availability="reported"
+        )
+        json_path = self.write_structured_import_json(data=data)
+
+        _, _, outputs = self.run_with_actions(
+            ["11", str(literature_id), f"'{json_path}'", "0"]
+        )
+
+        output = "\n".join(outputs)
+        self.assertIn("DOI: 不一致（保存不可）", output)
+        self.assertIn("Existing DOIとPayload DOIが不一致", output)
+        self.assertNotIn(cli_module._STRUCTURED_IMPORT_CONFIRMATION_MENU, outputs)
+        self.assertEqual(
+            self.connection.execute("SELECT COUNT(*) FROM structured_entities").fetchone()[0],
+            0,
+        )
 
     def test_literature_detail_displays_all_fields_tags_and_histories_in_order(
         self,

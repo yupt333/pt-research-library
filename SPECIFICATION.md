@@ -718,6 +718,24 @@ structured itemとEvidenceのverificationは`ai_unverified`または`user_verifi
 
 Phase 1 free-textからstructured dataへのautomatic backfill、bibliographyの二重保存、payload-local IDの永続化、`analysis_metadata`のcanonical保存は行わない。Phase 2-3ではstructured CRUD、JSON parser、Import Preview、CLI操作、GUI、Comparison、Research Project、OpenAI APIを実装しない。詳細は[`docs/STRUCTURED_DATA_MODEL.md`](docs/STRUCTURED_DATA_MODEL.md)を正式な参照先とする。
 
+### 20.13 Structured Data Repository + Import Preview
+
+Phase 2-4は、ユーザー本人1人がMacで使用するlocal single-user workflowとして、ChatGPT Structured Import Contract v1のJSONをPhase 2-3 canonical schemaへ安全に取り込む。追加料金は0円とし、OpenAI API、その他の外部API、network、cloud、server、外部dependencyを使用しない。structured schema versionは1のままとし、schema migrationを追加しない。
+
+parserはPython標準libraryの`json`を使用し、正式version `pt_research_library_structured_import_v1`だけを受け付ける。invalid JSON、Markdown code fence、前後のprose、duplicate object key、NaN / Infinity、wrong top-level type、missing field、unknown top-level / nested field、raw `user_verified`、invalid availability/value consistency、重複payload-local ID、dangling Evidence referenceをpath付きerrorとして拒否する。unknown fieldやinvalid dataを補完、推測、silent discardしない。
+
+Import targetはユーザーが既存Literature IDを明示選択する。Payload bibliographyはTitle、DOI、PMIDのtarget確認に使用するだけで、既存`literature`のbibliography、summary、note、status、ratingを自動更新しない。両側に存在するDOIまたはPMIDの不一致、およびExisting Literatureのidentifierを安全に正規化できない状態は保存をblockし、title mismatchと片側だけのidentifierはwarningとする。Phase 1 `verification_status`は変更しない。
+
+処理は`parse → validate → build plan → Import Preview → user confirmation → save`へ分離する。JSON readとPreviewはDBへwriteしない。PreviewはTarget、Payload、title similarity、identifier state、analysis warning、planned entity / field / Evidence / link counts、canonical DBへ保存されないimport-only metadataを日本語で表示する。`partial_text`または`unknown`で`not_reported`判断がある場合は原著確認warningを表示するが、それだけでは保存をblockしない。
+
+Raw importのstructured entity、field、Evidence verificationはすべて`ai_unverified`として保存する。payload-local Outcome / Result / Evidence等のIDはtransaction内でgenerated SQLite IDへmapし、その文字列を永続化しない。Fact Value Evidence refsはfield link、Outcome / Result / Limitation / Concept object refsはentity link、statistics / validation information内のnested refsは対応fieldへの重複なしunion linkとして保存する。
+
+既存structured entityまたはEvidenceが1件でもあるLiteratureへのfull importはblockする。automatic merge、automatic overwrite、automatic delete-and-replace、same-name Outcome mergeを行わない。同名Outcomeはcontext、definition、calculationを保持した別entityとして保存し、Resultは対応Outcomeのchildとする。
+
+保存には明示的なconfirmationを必須とし、full importを1 transactionで実行する。保存直前にtarget存在、DOI / PMID conflict、既存structured dataを再確認する。途中失敗時はentity、field、Evidence、linkをすべてrollbackし、partial importを残さない。既存callerのactive transaction中は保存せず、caller transactionをcommitしない。
+
+`contract_version`、`analysis_metadata`、bibliography copy、payload-local ID、Evidence locator単位のunavailable metadataはcanonical DBへ保存しない。Evidence locator availabilityはImport Previewでimport-only metadataとして明示し、reported locator valueだけをcanonical Evidence columnへ保存する。詳細workflowとmappingは[`docs/STRUCTURED_IMPORT_WORKFLOW.md`](docs/STRUCTURED_IMPORT_WORKFLOW.md)を正式な参照先とする。
+
 ---
 
 ## 21. 完了条件
@@ -768,6 +786,6 @@ Codexは以下を厳守する。
 
 Phase 1はSteps 0〜9がcompleted and pushed、completion assessmentはGO、final regressionは504 tests passedである。Phase 1の検証済みproduction behaviorをPhase 2以降の基盤として保護する。
 
-現在はPhase 2であり、Phase 2-0 Product direction / roadmap freeze、Phase 2-1 Literature Detail Information Architecture、Phase 2-2 ChatGPT Structured Import Contract v1はcompleted and pushedである。Current StepはPhase 2-3 Structured Research Data Model、Statusはcurrent step, in progressである。Phase 2-3はadditive SQLite schema、migration metadata、mandatory pre-migration backup、Phase 1 preservation、migration safetyとintegrity testsを対象とし、structured CRUD、parser、Import Preview、CLI操作、GUI、Comparison、Research Project、OpenAI APIを実装しない。
+現在はPhase 2であり、Phase 2-0 Product direction / roadmap freeze、Phase 2-1 Literature Detail Information Architecture、Phase 2-2 ChatGPT Structured Import Contract v1、Phase 2-3 Structured Research Data Modelはcompleted and pushedである。Phase 2-3 full regressionの履歴は538 tests passedである。Current StepはPhase 2-4 Structured Data Repository + Import Preview、Statusはcurrent step, in progressである。Phase 2-4はlocal single-user、zero additional cost、structured CRUD、strict Contract v1 parser、explicit target selection、Import Preview、confirmation guard、payload-local ID mapping、atomic save、rollback、CLI menu 11を対象とし、schema変更、API、network、cloud、GUI、Comparison、Research Projectを実装しない。
 
 仕様またはロードマップを変更する場合は、変更理由、既存仕様・データ・テスト・費用への影響を事前に説明し、必要なユーザー承認を得る。

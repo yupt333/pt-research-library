@@ -1,5 +1,6 @@
 """Interactive CLI for literature, tag, and usage-history management."""
 
+import shlex
 import sqlite3
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -31,6 +32,13 @@ from src.repository import (
     update_usage_history,
 )
 from src.search import search_literature
+from src.structured_import import (
+    ImportPreview,
+    StructuredImportValidationError,
+    build_import_preview,
+    parse_structured_import,
+    save_structured_import,
+)
 
 
 _MAIN_MENU = """理学療法文献ライブラリ
@@ -45,11 +53,12 @@ _MAIN_MENU = """理学療法文献ライブラリ
 8. 文献詳細
 9. CSV出力
 10. SQLiteバックアップ
+11. ChatGPT構造化JSON取込
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
 _INVALID_MENU_MESSAGE = (
     "入力エラー: "
-    "0、1、2、3、4、5、6、7、8、9、10のいずれかを選択してください。"
+    "0、1、2、3、4、5、6、7、8、9、10、11のいずれかを選択してください。"
 )
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
@@ -57,6 +66,16 @@ _RECORD_SEPARATOR = "-" * 40
 _AI_SUMMARY_STATUSES = ("未作成", "未確認", "確認済み", "修正済み")
 _VERIFICATION_STATUSES = ("未確認", "一部確認", "確認済み", "要確認")
 _ADOPTION_STATUSES = ("未判定", "採用候補", "採用", "除外")
+
+_STRUCTURED_IMPORT_CONFIRMATION_MENU = """1. この内容で保存する
+0. 保存せず戻る"""
+_IDENTIFIER_STATE_LABELS = {
+    "match": "一致",
+    "conflict": "不一致（保存不可）",
+    "existing_only": "Existing Literatureのみ",
+    "payload_only": "Payloadのみ",
+    "missing": "両方なし",
+}
 
 _CSV_EXPORT_MENU = """CSV出力
 
@@ -2108,6 +2127,177 @@ def _run_literature_detail(
     return False
 
 
+def _parse_json_file_path(raw_path: str) -> Path:
+    """Parse one shell-style path without executing any shell command."""
+    try:
+        parts = shlex.split(raw_path, posix=True)
+    except ValueError as error:
+        raise ValueError(f"JSON file pathを解釈できません: {error}") from error
+    if len(parts) != 1 or not parts[0]:
+        raise ValueError("JSON file pathを1つ指定してください。")
+    return Path(parts[0])
+
+
+def _format_import_preview(preview: ImportPreview) -> str:
+    """Format a researcher-facing Japanese Import Preview."""
+    target = preview.target_literature
+    similarity = (
+        "比較不可"
+        if preview.title_similarity is None
+        else f"{preview.title_similarity:.3f}"
+    )
+    count_labels = (
+        ("Study", "study"),
+        ("Methods", "methods"),
+        ("Outcome", "outcomes"),
+        ("Result", "results"),
+        ("Limitations", "limitations"),
+        ("Concepts", "concepts"),
+        ("Research Relevance", "research_relevance"),
+        ("Evidence", "evidence"),
+        ("Fields", "fields"),
+        ("Evidence links", "evidence_links"),
+    )
+    lines = [
+        "Import Preview",
+        "",
+        "Target Literature（明示選択）:",
+        f"ID: {target.id}",
+        f"title: {_display_value(target.title)}",
+        f"DOI: {_display_value(target.doi)}",
+        f"PMID: {_display_value(target.pmid)}",
+        "",
+        "Payload:",
+        f"source_document_name: {_display_value(preview.source_document_name)}",
+        f"analysis_scope: {preview.analysis_scope}",
+        f"title: {_display_value(preview.payload_title)}",
+        f"DOI: {_display_value(preview.payload_doi)}",
+        f"PMID: {_display_value(preview.payload_pmid)}",
+        "",
+        "Target check:",
+        f"title similarity: {similarity}",
+        f"DOI: {_IDENTIFIER_STATE_LABELS[preview.doi_state]}",
+        f"PMID: {_IDENTIFIER_STATE_LABELS[preview.pmid_state]}",
+        f"保存可否: {'保存不可' if preview.blocked else '確認後に保存可能'}",
+        "",
+        "保存予定:",
+    ]
+    lines.extend(
+        f"{label}: {preview.planned_counts[key]}" for label, key in count_labels
+    )
+    lines.extend(("", "重要注意・Warning:"))
+    lines.extend(f"- {warning}" for warning in preview.warnings)
+    if preview.blocking_reasons:
+        lines.extend(("", "保存をBLOCKする理由:"))
+        lines.extend(f"- {reason}" for reason in preview.blocking_reasons)
+
+    unavailable_lines: list[str] = []
+    for index, (_, states) in enumerate(
+        preview.evidence_locator_availability, start=1
+    ):
+        unavailable = [
+            f"{name}={state}" for name, state in states if state != "reported"
+        ]
+        if unavailable:
+            unavailable_lines.append(
+                f"- Evidence {index}: {', '.join(unavailable)}"
+            )
+    if unavailable_lines:
+        lines.extend(
+            (
+                "",
+                "Evidence locator availability（import-only metadata）:",
+                *unavailable_lines,
+            )
+        )
+    return "\n".join(lines)
+
+
+def _run_structured_import(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Preview and optionally save one strict ChatGPT Contract v1 JSON file."""
+    try:
+        raw_literature_id = _read_input(
+            input_func, "対象Literature ID（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id, "Literature ID"
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+
+    try:
+        target = get_literature(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if target is None:
+        output_func("対象Literatureが見つかりません。")
+        return False
+
+    try:
+        raw_path = _read_input(input_func, "JSON file path: ")
+    except (EOFError, KeyboardInterrupt):
+        return True
+    try:
+        json_path = _parse_json_file_path(raw_path)
+        json_text = json_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, ValueError) as error:
+        output_func(f"JSON file読込エラー: {error}")
+        return False
+
+    try:
+        payload = parse_structured_import(json_text)
+        preview = build_import_preview(connection, literature_id, payload)
+    except StructuredImportValidationError as error:
+        output_func(f"JSON validation error: {error}")
+        return False
+    except ValueError as error:
+        output_func(f"Import Preview error: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    output_func(_format_import_preview(preview))
+    if preview.blocked:
+        output_func("保存不可のため確認menuへ進みません。")
+        return False
+
+    while True:
+        output_func(_STRUCTURED_IMPORT_CONFIRMATION_MENU)
+        try:
+            choice = _read_input(input_func, _MENU_PROMPT).strip()
+        except (EOFError, KeyboardInterrupt):
+            return True
+        if choice == "0":
+            output_func("構造化JSONを保存せず戻ります。")
+            return False
+        if choice != "1":
+            output_func(_INVALID_CONFIRMATION_MESSAGE)
+            continue
+        try:
+            result = save_structured_import(
+                connection, preview, confirmed=True
+            )
+        except (StructuredImportValidationError, ValueError) as error:
+            output_func(f"構造化JSON取込エラー: {error}")
+            return False
+        except sqlite3.Error:
+            output_func(_DATABASE_ERROR_MESSAGE)
+            raise
+        output_func("構造化JSONを保存しました。")
+        output_func(f"対象Literature ID: {result.literature_id}")
+        return False
+
+
 def run_cli(
     connection: sqlite3.Connection,
     *,
@@ -2141,6 +2331,7 @@ def run_cli(
             "8",
             "9",
             "10",
+            "11",
         }:
             output_func(_INVALID_MENU_MESSAGE)
             continue
@@ -2224,3 +2415,10 @@ def run_cli(
                 output_func,
                 backup_directory,
             )
+        elif choice == "11" and _run_structured_import(
+            connection,
+            input_func,
+            output_func,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None

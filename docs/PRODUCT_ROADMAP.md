@@ -8,10 +8,10 @@
 - Phase 1 completion assessment: GO
 - Phase 1 final regression: 504 tests passed
 - Current phase: Phase 2
-- Current step: Phase 2-3 Structured Research Data Model
+- Current step: Phase 2-4 Structured Data Repository + Import Preview
 - Current step status: in progress
 
-Phase 2-0、Phase 2-1、Phase 2-2はcompleted and pushedである。Phase 2-3はadditive SQLite structured schema、migration metadata、mandatory pre-migration backup、Phase 1 preservation、database integrityとmigration testsを対象とし、structured CRUD、parser、Import Preview、CLI structured-data操作、GUI、Comparison、Research Project、OpenAI APIは実装しない。
+Phase 2-0、Phase 2-1、Phase 2-2、Phase 2-3はcompleted and pushedである。Phase 2-3 completion時のfull regressionは538 tests passedである。Phase 2-4はlocal single-user、zero additional cost、structured repository CRUD、Contract v1 parser、strict validation、explicit target selection、Import Preview、user confirmation、payload-local ID mapping、atomic save、rollback、CLI import flowを対象とし、schema変更、network、API、cloud、server、external dependencyを導入しない。
 
 ## 2. Product Goal
 
@@ -419,7 +419,9 @@ Status: completed and pushed
 
 ### Phase 2-3: Structured Research Data Model
 
-Status: current step, in progress
+Status: completed and pushed
+
+- completion時full regression: 538 tests passed
 
 - Study / Methods / Outcomes / Evidenceとの関連
 - conceptual modelをSQLite schemaへ落とす
@@ -429,15 +431,18 @@ Status: current step, in progress
 
 ### Phase 2-4: Structured Data Repository + Import Preview
 
-Status: planned
+Status: current step, in progress
 
-- 新構造のCRUD
-- ChatGPT結果parser
-- validation
-- Import Preview
-- user confirmation後にsave
-- AI情報は未確認として保存
-- APIなし
+- local single-user、追加料金0円
+- 新構造のCRUDとentity hierarchy / field vocabulary validation
+- Contract v1 strict JSON parserとunknown field rejection
+- explicit Literature targetとbibliography比較
+- DB write 0のImport Preview
+- user confirmation後だけatomic save
+- payload-local ID / Evidence refsのcanonical mapping
+- existing structured dataはblockし、merge / overwriteしない
+- AI情報は`ai_unverified`として保存
+- schema変更なし、network / API / cloudなし
 
 ### Phase 2-5: Evidence Reference
 

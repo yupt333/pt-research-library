@@ -1,7 +1,7 @@
 """Data structures used by the literature repository."""
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -73,3 +73,53 @@ class UsageHistory:
     usage_note: Optional[str] = None
     used_at: Optional[str] = None
     created_at: Optional[str] = None
+
+
+@dataclass
+class StructuredEntity:
+    """One canonical structured research-data entity."""
+
+    literature_id: int
+    entity_type: str
+    verification: str
+    id: Optional[int] = None
+    parent_entity_id: Optional[int] = None
+    sort_order: int = 0
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@dataclass
+class StructuredField:
+    """One decoded structured field belonging to a structured entity."""
+
+    literature_id: int
+    entity_id: int
+    field_key: str
+    content_role: str
+    value: Any
+    availability: Optional[str]
+    verification: str
+    id: Optional[int] = None
+    note: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@dataclass
+class EvidenceReference:
+    """One canonical source locator or exact source quotation."""
+
+    literature_id: int
+    verification: str
+    id: Optional[int] = None
+    pdf_page: Optional[int] = None
+    printed_page: Optional[str] = None
+    section: Optional[str] = None
+    subsection: Optional[str] = None
+    table_label: Optional[str] = None
+    figure_label: Optional[str] = None
+    quote_text: Optional[str] = None
+    note: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
