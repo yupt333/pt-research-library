@@ -736,6 +736,20 @@ Raw importのstructured entity、field、Evidence verificationはすべて`ai_un
 
 `contract_version`、`analysis_metadata`、bibliography copy、payload-local ID、Evidence locator単位のunavailable metadataはcanonical DBへ保存しない。Evidence locator availabilityはImport Previewでimport-only metadataとして明示し、reported locator valueだけをcanonical Evidence columnへ保存する。詳細workflowとmappingは[`docs/STRUCTURED_IMPORT_WORKFLOW.md`](docs/STRUCTURED_IMPORT_WORKFLOW.md)を正式な参照先とする。
 
+### 20.14 Evidence Reference review
+
+Phase 2-5では、既存schema version 1とPhase 2-4 structured repository CRUDを維持したまま、保存済みLiteratureのEvidence metadataを確認・管理する。CLI menu 12から、Literature別Evidence一覧、Evidence詳細、manual create / edit、Evidence単体のverification変更、structured itemからEvidenceへのread、same-Literature attach / detach、2段階確認付き削除を行う。
+
+Evidence一覧と選択では内部DB IDより画面上の選択番号を優先する。Evidence detailはPDF page、printed page、section、subsection、Table、Figure、original quote、note、verificationに加え、Evidenceが支えるstructured field / entityをresearcher-facing labelで表示する。同名Outcomeを統合せず、存在するname、context、condition、result、field valueだけからlabelを構築し、研究情報を推測しない。
+
+Manual createのverificationは常に`ai_unverified`とし、保存前の明示確認を必須とする。`user_verified` Evidenceのpdf page、printed page、section、subsection、Table、Figure、quoteを実質変更する場合だけ、edit保存時に`ai_unverified`へ戻す。noteだけの変更または同値入力ではverificationを落とさない。このworkflow ruleは既存`update_evidence_reference`のpublic behaviorを変更せず、Evidence review service layerで適用する。
+
+Evidence verificationは原著該当箇所を確認した利用者の明示操作で`ai_unverified`から`user_verified`へ変更し、逆方向にも戻せる。変更対象はEvidence rowだけであり、structured field、structured entity、literature-level `verification_status`、`ai_summary_status`へcascadeしない。
+
+Attach / detachは同一Literature内だけを許可し、duplicate attachは重複rowを作らない。Detachはlinkだけを削除し、Evidenceとstructured itemを保持する。Evidence削除は2段階確認と影響表示を必須とし、Evidence本体とlink rowだけを削除する。Literature、structured entity / field、外部PDF fileは削除しない。
+
+Read workflowはcaller transactionを変更しない。Evidence reviewのwrite workflowはcallerのactive transaction中に拒否し、commitまたはrollbackしない。Phase 2-5ではschema migration、PDF open / page jump、PDF parsing、OCR、API、network、cloud、GUI、Comparison、Research Projectを実装しない。詳細は[`docs/EVIDENCE_REFERENCE_WORKFLOW.md`](docs/EVIDENCE_REFERENCE_WORKFLOW.md)を正式な参照先とする。
+
 ---
 
 ## 21. 完了条件
@@ -786,6 +800,6 @@ Codexは以下を厳守する。
 
 Phase 1はSteps 0〜9がcompleted and pushed、completion assessmentはGO、final regressionは504 tests passedである。Phase 1の検証済みproduction behaviorをPhase 2以降の基盤として保護する。
 
-現在はPhase 2であり、Phase 2-0 Product direction / roadmap freeze、Phase 2-1 Literature Detail Information Architecture、Phase 2-2 ChatGPT Structured Import Contract v1、Phase 2-3 Structured Research Data Modelはcompleted and pushedである。Phase 2-3 full regressionの履歴は538 tests passedである。Current StepはPhase 2-4 Structured Data Repository + Import Preview、Statusはcurrent step, in progressである。Phase 2-4はlocal single-user、zero additional cost、structured CRUD、strict Contract v1 parser、explicit target selection、Import Preview、confirmation guard、payload-local ID mapping、atomic save、rollback、CLI menu 11を対象とし、schema変更、API、network、cloud、GUI、Comparison、Research Projectを実装しない。
+現在はPhase 2であり、Phase 2-0 Product direction / roadmap freeze、Phase 2-1 Literature Detail Information Architecture、Phase 2-2 ChatGPT Structured Import Contract v1、Phase 2-3 Structured Research Data Model、Phase 2-4 Structured Data Repository + Import Previewはcompleted and pushedである。Phase 2-4 completion commitは`32d62034867c6af0e06055a1c09cb46cd887ef25`、completion時のfull regressionは591 tests passedである。Current StepはPhase 2-5 Evidence Reference、Statusはcurrent step, in progressである。Phase 2-5はlocal single-user、zero additional cost、Evidence list/detail/create/edit/verification、structured item backlink、same-Literature attach / detach、安全な削除、CLI menu 12を対象とし、schema変更、PDF navigation、API、network、cloud、GUI、Comparison、Research Projectを実装しない。
 
 仕様またはロードマップを変更する場合は、変更理由、既存仕様・データ・テスト・費用への影響を事前に説明し、必要なユーザー承認を得る。

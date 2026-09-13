@@ -378,11 +378,15 @@ Scope:
 The full schema and migration design is recorded in
 `docs/STRUCTURED_DATA_MODEL.md`.
 
-## Current Step
+## Latest Completed Phase 2 Step
 
 ### Phase 2-4: Structured Data Repository + Import Preview
 
-Status: current step, in progress
+Status: completed and pushed
+
+Completion commit: `32d62034867c6af0e06055a1c09cb46cd887ef25`
+
+Full regression at completion: 591 tests passed
 
 Scope:
 
@@ -405,19 +409,34 @@ Scope:
 The full workflow is recorded in
 `docs/STRUCTURED_IMPORT_WORKFLOW.md`.
 
+## Current Step
+
+### Phase 2-5: Evidence Reference
+
+Status: current step, in progress
+
+Scope:
+
+- Literature別Evidence list and detail
+- human-readable structured field/entity backlinks
+- manual Evidence creation with `ai_unverified` default
+- reviewed Evidence edit with substantive-change verification reset
+- explicit Evidence-only verification changes
+- structured item to Evidence read workflow
+- same-Literature manual attach and detach
+- two-step Evidence deletion safety
+- Literature Detail Evidence count summary
+- CLI menu 12 Evidence review and management
+- local single-user operation and zero additional cost
+- no schema change, PDF navigation, API, network, cloud, or dependency
+
+The full workflow is recorded in
+`docs/EVIDENCE_REFERENCE_WORKFLOW.md`.
+
 ## Phase 2 Planned Steps
 
 Phase 2 Steps must be performed in the following order. A later Step must not
 be implemented early without an approved roadmap change.
-
-### Phase 2-5: Evidence Reference
-
-Status: planned
-
-Includes:
-
-- page / section / table / figure / original text / verification
-- structured item to evidence association
 
 ### Phase 2-6: Original PDF Evidence Navigation
 

@@ -39,7 +39,19 @@ from src.repository import (
     update_usage_history,
 )
 from src.search import search_literature
-from src.structured_repository import create_structured_entity
+from src.structured_repository import (
+    attach_evidence_to_entity,
+    attach_evidence_to_field,
+    create_evidence_reference,
+    create_structured_entity,
+    create_structured_field,
+    get_evidence_reference,
+    get_structured_entity,
+    get_structured_field,
+    list_evidence_for_entity,
+    list_evidence_for_field,
+    update_evidence_reference,
+)
 
 
 _SEARCH_FIELDS = (
@@ -798,6 +810,7 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("9. CSV出力", outputs[0])
         self.assertIn("10. SQLiteバックアップ", outputs[0])
         self.assertIn("11. ChatGPT構造化JSON取込", outputs[0])
+        self.assertIn("12. Evidence確認・管理", outputs[0])
         self.assertIn("0. 終了", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
@@ -814,14 +827,11 @@ class CliTestCase(unittest.TestCase):
 
     def test_invalid_empty_and_many_choices_loop_without_recursion(self) -> None:
         invalid_count = 1200
-        actions = ["", "invalid", *(["12"] * invalid_count), "0"]
+        actions = ["", "invalid", *(["13"] * invalid_count), "0"]
 
         _, feeder, outputs = self.run_with_actions(actions)
 
-        error_message = (
-            "入力エラー: "
-            "0、1、2、3、4、5、6、7、8、9、10、11のいずれかを選択してください。"
-        )
+        error_message = cli_module._INVALID_MENU_MESSAGE
         self.assertEqual(
             outputs.count(error_message),
             invalid_count + 2,
@@ -10689,7 +10699,7 @@ class CliTestCase(unittest.TestCase):
         invalid_count = 1200
         feeder = InputFeeder(
             [
-                "12",
+                "13",
                 "7",
                 "5",
                 "invalid",
@@ -12763,7 +12773,7 @@ class CliTestCase(unittest.TestCase):
                     self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
 
     def test_csv_submenu_contract_default_path_and_unset_search(self) -> None:
-        feeder = InputFeeder(["9", "3", "2", "1", "0", "12", "0"])
+        feeder = InputFeeder(["9", "3", "2", "1", "0", "13", "0"])
         outputs: list[str] = []
 
         with patch.object(
@@ -13795,7 +13805,7 @@ class CliTestCase(unittest.TestCase):
             any(item.startswith("バックアップエラー: ") for item in outputs)
         )
 
-    def test_literature_detail_main_menu_zero_through_eleven_contract(
+    def test_literature_detail_main_menu_zero_through_twelve_contract(
         self,
     ) -> None:
         feeder = InputFeeder(
@@ -13811,6 +13821,7 @@ class CliTestCase(unittest.TestCase):
                 "9",
                 "10",
                 "11",
+                "12",
                 "0",
             ]
         )
@@ -13856,6 +13867,11 @@ class CliTestCase(unittest.TestCase):
                 "_run_structured_import",
                 return_value=False,
             ) as structured_imported,
+            patch.object(
+                cli_module,
+                "_run_evidence_management",
+                return_value=False,
+            ) as evidence_managed,
         ):
             result = run_cli(
                 self.connection,
@@ -13876,6 +13892,7 @@ class CliTestCase(unittest.TestCase):
             "9. CSV出力",
             "10. SQLiteバックアップ",
             "11. ChatGPT構造化JSON取込",
+            "12. Evidence確認・管理",
             "0. 終了",
         )
         for option in expected_options:
@@ -13909,6 +13926,11 @@ class CliTestCase(unittest.TestCase):
             "backups",
         )
         structured_imported.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+        )
+        evidence_managed.assert_called_once_with(
             self.connection,
             feeder,
             outputs.append,
@@ -14942,6 +14964,557 @@ class CliTestCase(unittest.TestCase):
             "\n".join(outputs),
         )
         self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+
+    def test_evidence_submenu_contract_invalid_navigation_and_interrupts(self) -> None:
+        invalid_count = 50
+        feeder = InputFeeder(
+            ["12", "", "invalid", *(["10"] * invalid_count), "0", "0"]
+        )
+        outputs: list[str] = []
+
+        result = run_cli(
+            self.connection,
+            input_func=feeder,
+            output_func=outputs.append,
+        )
+
+        self.assertIsNone(result)
+        for option in (
+            "1. Literature別Evidence一覧",
+            "2. Evidence詳細",
+            "3. Evidence新規作成",
+            "4. Evidence編集",
+            "5. Evidence確認状態変更",
+            "6. Structured item → Evidence確認",
+            "7. EvidenceをStructured itemへ関連付け",
+            "8. EvidenceとStructured itemの関連解除",
+            "9. Evidence削除",
+            "0. メインメニューへ戻る",
+        ):
+            self.assertIn(option, cli_module._EVIDENCE_MANAGEMENT_MENU)
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_EVIDENCE_MENU_MESSAGE),
+            invalid_count + 2,
+        )
+        self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+
+        for interruption in (EOFError("evidence EOF"), KeyboardInterrupt()):
+            with self.subTest(interruption=type(interruption).__name__):
+                _, _, interrupted_outputs = self.run_with_actions(
+                    ["12", interruption]
+                )
+                self.assertEqual(
+                    interrupted_outputs.count(cli_module._EXIT_MESSAGE), 1
+                )
+
+    def test_evidence_cli_list_empty_unknown_detail_and_human_backlinks(self) -> None:
+        empty_id = self.add_record("Synthetic empty Evidence target")
+        target_id = self.add_record("Synthetic Evidence detail target")
+        outcome_id = create_structured_entity(
+            self.connection, target_id, "outcome"
+        )
+        name_id = create_structured_field(
+            self.connection,
+            outcome_id,
+            "name",
+            content_role="source_fact",
+            value="Synthetic outcome",
+            availability="reported",
+        )
+        evidence_id = create_evidence_reference(
+            self.connection,
+            target_id,
+            pdf_page=3,
+            printed_page="S4",
+            section="Results",
+            subsection="Primary",
+            table_label="Table 2",
+            figure_label="Figure 1",
+            quote_text="Synthetic exact quote",
+            note="Synthetic Evidence note",
+            verification="user_verified",
+        )
+        attach_evidence_to_entity(self.connection, outcome_id, evidence_id)
+        attach_evidence_to_field(self.connection, name_id, evidence_id)
+
+        actions = [
+            "12",
+            "1",
+            "999999",
+            "1",
+            str(empty_id),
+            "1",
+            str(target_id),
+            "2",
+            str(target_id),
+            "1",
+            "0",
+            "0",
+        ]
+        _, _, outputs = self.run_with_actions(actions)
+        text = "\n".join(outputs)
+
+        self.assertIn("対象Literatureが見つかりません。", outputs)
+        self.assertIn("Evidence件数: 0", outputs)
+        self.assertIn(
+            "このLiteratureにはEvidenceが登録されていません。", outputs
+        )
+        for expected in (
+            "pdf_page: 3",
+            "printed_page: S4",
+            "section: Results",
+            "subsection: Primary",
+            "table_label: Table 2",
+            "figure_label: Figure 1",
+            "quote_text: あり",
+            "note: あり",
+            "verification: user_verified",
+            "このEvidenceが支えているstructured item:",
+            "Field link: Outcome",
+            "name",
+            "value: Synthetic outcome",
+            "Entity link: Outcome",
+            "Synthetic exact quote",
+            "Synthetic Evidence note",
+        ):
+            self.assertIn(expected, text)
+        self.assertNotIn(f"evidence_id: {evidence_id}", text)
+
+    def test_evidence_cli_uses_unique_outcome_labels_across_review_screens(
+        self,
+    ) -> None:
+        literature_id = self.add_record("Synthetic colliding Outcome target")
+        outcome_ids: list[int] = []
+        result_ids: list[int] = []
+        for sort_order in (0, 1):
+            outcome_id = create_structured_entity(
+                self.connection,
+                literature_id,
+                "outcome",
+                sort_order=sort_order,
+            )
+            outcome_ids.append(outcome_id)
+            create_structured_field(
+                self.connection,
+                outcome_id,
+                "name",
+                content_role="source_fact",
+                value="Strain",
+                availability="reported",
+            )
+            result_id = create_structured_entity(
+                self.connection,
+                literature_id,
+                "result",
+                parent_entity_id=outcome_id,
+                sort_order=sort_order + 2,
+            )
+            result_ids.append(result_id)
+            create_structured_field(
+                self.connection,
+                result_id,
+                "condition_or_comparison",
+                content_role="source_fact",
+                value="Baseline",
+                availability="reported",
+            )
+            create_structured_field(
+                self.connection,
+                result_id,
+                "result",
+                content_role="source_fact",
+                value="No significant difference",
+                availability="reported",
+            )
+        evidence_id = create_evidence_reference(
+            self.connection, literature_id, section="Results"
+        )
+        attach_evidence_to_entity(
+            self.connection, outcome_ids[1], evidence_id
+        )
+        attach_evidence_to_entity(
+            self.connection, result_ids[1], evidence_id
+        )
+
+        _, _, outputs = self.run_with_actions(
+            [
+                "12",
+                "2",
+                str(literature_id),
+                "1",
+                "6",
+                str(literature_id),
+                "7",
+                str(literature_id),
+                "1",
+                "1",
+                "0",
+                "8",
+                str(literature_id),
+                "1",
+                "1",
+                "0",
+                "0",
+                "0",
+            ]
+        )
+
+        text = "\n".join(outputs)
+        first_outcome = "Strain (1)"
+        second_outcome = "Strain (2)"
+        second_result = (
+            "Strain (2) — Baseline — No significant difference"
+        )
+        self.assertIn(first_outcome, text)
+        self.assertIn(second_outcome, text)
+        self.assertIn(second_result, text)
+        self.assertGreaterEqual(text.count(first_outcome), 2)
+        self.assertGreaterEqual(text.count(second_outcome), 4)
+        self.assertIn("Evidenceの関連付けを中止しました。", outputs)
+        self.assertIn("Evidenceの関連解除を中止しました。", outputs)
+        self.assertIsNotNone(get_evidence_reference(self.connection, evidence_id))
+        self.assertEqual(
+            [item.id for item in list_evidence_for_entity(self.connection, outcome_ids[1])],
+            [evidence_id],
+        )
+
+    def test_evidence_cli_create_preview_cancel_validation_and_default(self) -> None:
+        literature_id = self.add_record("Synthetic Evidence create target")
+        cancel_values = ["1", "S1", "Methods", "", "", "", "quote", "note"]
+        valid_values = [
+            "2",
+            "S2",
+            "Results",
+            "Primary",
+            "Table 1",
+            "Figure 2",
+            "Synthetic source text",
+            "Synthetic note",
+        ]
+        note_only = ["", "", "", "", "", "", "", "note only"]
+        actions = [
+            "12",
+            "3",
+            str(literature_id),
+            *cancel_values,
+            "0",
+            "3",
+            str(literature_id),
+            *note_only,
+            "1",
+            "3",
+            str(literature_id),
+            *valid_values,
+            "1",
+            "0",
+            "0",
+        ]
+
+        _, _, outputs = self.run_with_actions(actions)
+        evidence = self.connection.execute(
+            """
+            SELECT pdf_page, printed_page, section, subsection,
+                   table_label, figure_label, quote_text, note, verification
+            FROM evidence_references
+            ORDER BY id
+            """
+        ).fetchall()
+
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(
+            tuple(evidence[0]),
+            (2, *valid_values[1:], "ai_unverified"),
+        )
+        text = "\n".join(outputs)
+        self.assertIn("Evidence保存前Preview:", outputs)
+        self.assertIn("Evidenceの保存を中止しました。", outputs)
+        self.assertIn("Evidence作成エラー:", text)
+        self.assertIn("note以外のlocatorまたはquote", text)
+        self.assertIn("確認状態: ai_unverified", text)
+
+    def test_evidence_cli_edit_reset_warning_cancel_invalid_and_note_preserve(self) -> None:
+        literature_id = self.add_record("Synthetic Evidence edit target")
+        evidence_id = create_evidence_reference(
+            self.connection,
+            literature_id,
+            pdf_page=5,
+            section="Before",
+            quote_text="Original quote",
+            note="Before note",
+            verification="user_verified",
+        )
+
+        self.run_with_actions(
+            [
+                "12",
+                "4",
+                str(literature_id),
+                "1",
+                "8",
+                "Cancelled note",
+                "0",
+                "4",
+                str(literature_id),
+                "1",
+                "1",
+                "0",
+                "4",
+                str(literature_id),
+                "1",
+                "8",
+                "Updated note",
+                "1",
+                "0",
+                "0",
+            ]
+        )
+        after_note = get_evidence_reference(self.connection, evidence_id)
+        self.assertEqual(after_note.note, "Updated note")
+        self.assertEqual(after_note.verification, "user_verified")
+        self.assertEqual(after_note.pdf_page, 5)
+
+        _, _, outputs = self.run_with_actions(
+            [
+                "12",
+                "4",
+                str(literature_id),
+                "1",
+                "3",
+                "After",
+                "1",
+                "0",
+                "0",
+            ]
+        )
+        updated = get_evidence_reference(self.connection, evidence_id)
+        self.assertEqual(updated.section, "After")
+        self.assertEqual(updated.verification, "ai_unverified")
+        self.assertIn(
+            "根拠位置または原文を変更するため、確認状態はai_unverifiedへ戻ります",
+            outputs,
+        )
+
+    def test_evidence_cli_verification_explicit_cancel_reverse_and_no_cascade(self) -> None:
+        literature_id = self.add_record(
+            "Synthetic Evidence verification target",
+            verification_status="要確認",
+            ai_summary_status="修正済み",
+        )
+        entity_id = create_structured_entity(
+            self.connection,
+            literature_id,
+            "outcome",
+            verification="ai_unverified",
+        )
+        field_id = create_structured_field(
+            self.connection,
+            entity_id,
+            "name",
+            content_role="source_fact",
+            value="Synthetic outcome",
+            availability="reported",
+            verification="ai_unverified",
+        )
+        evidence_id = create_evidence_reference(
+            self.connection, literature_id, pdf_page=6
+        )
+        before_literature = get_literature(self.connection, literature_id)
+        before_entity = get_structured_entity(self.connection, entity_id)
+        before_field = get_structured_field(self.connection, field_id)
+
+        _, _, outputs = self.run_with_actions(
+            [
+                "12",
+                "5",
+                str(literature_id),
+                "1",
+                "0",
+                "5",
+                str(literature_id),
+                "1",
+                "1",
+                "5",
+                str(literature_id),
+                "1",
+                "1",
+                "0",
+                "0",
+            ]
+        )
+
+        self.assertEqual(
+            get_evidence_reference(self.connection, evidence_id).verification,
+            "ai_unverified",
+        )
+        self.assertEqual(get_literature(self.connection, literature_id), before_literature)
+        self.assertEqual(get_structured_entity(self.connection, entity_id), before_entity)
+        self.assertEqual(get_structured_field(self.connection, field_id), before_field)
+        text = "\n".join(outputs)
+        self.assertIn(
+            "原著の該当箇所を確認した場合のみ確認済みにしてください。",
+            outputs,
+        )
+        self.assertIn(
+            "このEvidenceの確認済み状態を取り消します。", outputs
+        )
+        self.assertIn("ai_unverified → user_verified", text)
+        self.assertIn("user_verified → ai_unverified", text)
+
+    def test_evidence_cli_structured_item_read_attach_duplicate_and_detach(self) -> None:
+        literature_id = self.add_record("Synthetic Evidence association target")
+        entity_id = create_structured_entity(
+            self.connection, literature_id, "method_body_condition"
+        )
+        field_id = create_structured_field(
+            self.connection,
+            entity_id,
+            "load",
+            content_role="source_fact",
+            value={"inferior_force_N": 90},
+            availability="reported",
+        )
+        evidence_id = create_evidence_reference(
+            self.connection, literature_id, section="Methods"
+        )
+        before_verification = get_evidence_reference(
+            self.connection, evidence_id
+        ).verification
+
+        _, _, outputs = self.run_with_actions(
+            [
+                "12",
+                "6",
+                str(literature_id),
+                "7",
+                str(literature_id),
+                "1",
+                "2",
+                "1",
+                "7",
+                str(literature_id),
+                "1",
+                "2",
+                "1",
+                "8",
+                str(literature_id),
+                "1",
+                "1",
+                "1",
+                "0",
+                "0",
+            ]
+        )
+
+        self.assertEqual(list_evidence_for_field(self.connection, field_id), [])
+        self.assertIsNotNone(get_evidence_reference(self.connection, evidence_id))
+        self.assertIsNotNone(get_structured_field(self.connection, field_id))
+        self.assertEqual(
+            get_evidence_reference(self.connection, evidence_id).verification,
+            before_verification,
+        )
+        text = "\n".join(outputs)
+        self.assertIn("Methods / Body Condition", text)
+        self.assertIn('value: {"inferior_force_N": 90}', text)
+        self.assertIn("linked Evidence count: 0", text)
+        self.assertIn("Evidenceをstructured itemへ関連付けました。", text)
+        self.assertIn("重複作成しませんでした。", text)
+        self.assertIn("関連を解除しました。", text)
+
+    def test_evidence_cli_delete_two_steps_preserves_structured_items_and_unrelated(self) -> None:
+        literature_id = self.add_record("Synthetic Evidence delete target")
+        entity_id = create_structured_entity(
+            self.connection, literature_id, "outcome"
+        )
+        field_id = create_structured_field(
+            self.connection,
+            entity_id,
+            "name",
+            content_role="source_fact",
+            value="Synthetic delete outcome",
+            availability="reported",
+        )
+        target_id = create_evidence_reference(
+            self.connection, literature_id, pdf_page=8
+        )
+        unrelated_id = create_evidence_reference(
+            self.connection, literature_id, pdf_page=9
+        )
+        attach_evidence_to_entity(self.connection, entity_id, target_id)
+        attach_evidence_to_field(self.connection, field_id, target_id)
+
+        self.run_with_actions(
+            [
+                "12",
+                "9",
+                str(literature_id),
+                "1",
+                "0",
+                "9",
+                str(literature_id),
+                "1",
+                "1",
+                "2",
+                "0",
+                "9",
+                str(literature_id),
+                "1",
+                "1",
+                "1",
+                "0",
+                "0",
+            ]
+        )
+
+        self.assertIsNone(get_evidence_reference(self.connection, target_id))
+        self.assertIsNotNone(get_evidence_reference(self.connection, unrelated_id))
+        self.assertIsNotNone(get_literature(self.connection, literature_id))
+        self.assertIsNotNone(get_structured_entity(self.connection, entity_id))
+        self.assertIsNotNone(get_structured_field(self.connection, field_id))
+        self.assertEqual(list_evidence_for_entity(self.connection, entity_id), [])
+        self.assertEqual(list_evidence_for_field(self.connection, field_id), [])
+
+    def test_evidence_cli_literature_detail_counts_and_transaction_safety(self) -> None:
+        literature_id = self.add_record("Synthetic Evidence detail counts")
+        create_evidence_reference(
+            self.connection,
+            literature_id,
+            pdf_page=1,
+            verification="ai_unverified",
+        )
+        create_evidence_reference(
+            self.connection,
+            literature_id,
+            pdf_page=2,
+            verification="user_verified",
+        )
+
+        _, _, outputs = self.run_with_actions(["8", str(literature_id), "0"])
+        text = "\n".join(outputs)
+        self.assertIn("Structured Evidence:", text)
+        self.assertIn("Evidence件数: 2", text)
+        self.assertIn("ai_unverified件数: 1", text)
+        self.assertIn("user_verified件数: 1", text)
+
+        marker = self.connection.execute(
+            "INSERT INTO tags (name) VALUES (?)", ("pending-evidence-cli",)
+        )
+        marker_id = marker.lastrowid
+        _, feeder, transaction_outputs = self.run_with_actions(
+            ["12", "3", "0", "0"]
+        )
+        self.assertIn(
+            cli_module._EVIDENCE_ACTIVE_TRANSACTION_MESSAGE,
+            transaction_outputs,
+        )
+        self.assertEqual(len(feeder.prompts), 4)
+        self.assertTrue(self.connection.in_transaction)
+        self.connection.rollback()
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT COUNT(*) FROM tags WHERE id = ?", (marker_id,)
+            ).fetchone()[0],
+            0,
+        )
 
     def test_cli_creates_no_database_export_or_backup_artifacts(self) -> None:
         self.populate_search_records()

@@ -8,10 +8,10 @@
 - Phase 1 completion assessment: GO
 - Phase 1 final regression: 504 tests passed
 - Current phase: Phase 2
-- Current step: Phase 2-4 Structured Data Repository + Import Preview
+- Current step: Phase 2-5 Evidence Reference
 - Current step status: in progress
 
-Phase 2-0、Phase 2-1、Phase 2-2、Phase 2-3はcompleted and pushedである。Phase 2-3 completion時のfull regressionは538 tests passedである。Phase 2-4はlocal single-user、zero additional cost、structured repository CRUD、Contract v1 parser、strict validation、explicit target selection、Import Preview、user confirmation、payload-local ID mapping、atomic save、rollback、CLI import flowを対象とし、schema変更、network、API、cloud、server、external dependencyを導入しない。
+Phase 2-0、Phase 2-1、Phase 2-2、Phase 2-3、Phase 2-4はcompleted and pushedである。Phase 2-4 completion commitは`32d62034867c6af0e06055a1c09cb46cd887ef25`、completion時のfull regressionは591 tests passedである。Phase 2-5はEvidence metadataの一覧・詳細・作成・編集・確認状態、structured item backlink、manual attach / detach、安全な削除、CLI menu 12を対象とし、schema変更、PDF navigation、network、API、cloud、server、external dependencyを導入しない。
 
 ## 2. Product Goal
 
@@ -431,7 +431,10 @@ Status: completed and pushed
 
 ### Phase 2-4: Structured Data Repository + Import Preview
 
-Status: current step, in progress
+Status: completed and pushed
+
+- completion commit: `32d62034867c6af0e06055a1c09cb46cd887ef25`
+- completion時full regression: 591 tests passed
 
 - local single-user、追加料金0円
 - 新構造のCRUDとentity hierarchy / field vocabulary validation
@@ -446,10 +449,15 @@ Status: current step, in progress
 
 ### Phase 2-5: Evidence Reference
 
-Status: planned
+Status: current step, in progress
 
 - page / section / table / figure / original text / verification
-- structured itemとevidenceの関連付け
+- human-readable structured item backlink
+- manual create / edit / verification review
+- same-Literature attach / detach
+- two-step Evidence deletion safety
+- CLI menu 12とLiterature Detail Evidence summary
+- schema変更なし、Original PDF navigationなし
 
 ### Phase 2-6: Original PDF Evidence Navigation
 

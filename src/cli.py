@@ -4,12 +4,28 @@ import shlex
 import sqlite3
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 from src.backup import create_database_backup
 from src.csv_export import export_literature_csv
 from src.duplicates import DuplicateCandidate, find_duplicate_candidates
-from src.models import Literature, Tag, UsageHistory
+from src.evidence_review import (
+    EVIDENCE_EDITABLE_FIELDS,
+    EvidenceDetail,
+    StructuredItemEvidence,
+    attach_evidence,
+    build_evidence_edit_preview,
+    change_evidence_verification,
+    create_review_evidence,
+    delete_review_evidence,
+    detach_evidence,
+    evidence_locator_summary,
+    get_evidence_detail,
+    list_literature_evidence,
+    list_structured_items_with_evidence,
+    save_evidence_edit,
+)
+from src.models import EvidenceReference, Literature, Tag, UsageHistory
 from src.repository import (
     add_literature,
     attach_tag_to_literature,
@@ -54,11 +70,12 @@ _MAIN_MENU = """理学療法文献ライブラリ
 9. CSV出力
 10. SQLiteバックアップ
 11. ChatGPT構造化JSON取込
+12. Evidence確認・管理
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
 _INVALID_MENU_MESSAGE = (
     "入力エラー: "
-    "0、1、2、3、4、5、6、7、8、9、10、11のいずれかを選択してください。"
+    "0、1、2、3、4、5、6、7、8、9、10、11、12のいずれかを選択してください。"
 )
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
@@ -76,6 +93,48 @@ _IDENTIFIER_STATE_LABELS = {
     "payload_only": "Payloadのみ",
     "missing": "両方なし",
 }
+
+_EVIDENCE_MANAGEMENT_MENU = """Evidence確認・管理
+
+1. Literature別Evidence一覧
+2. Evidence詳細
+3. Evidence新規作成
+4. Evidence編集
+5. Evidence確認状態変更
+6. Structured item → Evidence確認
+7. EvidenceをStructured itemへ関連付け
+8. EvidenceとStructured itemの関連解除
+9. Evidence削除
+0. メインメニューへ戻る"""
+_INVALID_EVIDENCE_MENU_MESSAGE = (
+    "入力エラー: 0〜9のいずれかを選択してください。"
+)
+_EVIDENCE_CREATE_CONFIRMATION_MENU = """1. 保存
+0. 中止"""
+_EVIDENCE_EDIT_FIELD_MENU = "\n".join(
+    (
+        *(
+            f"{number}. {field_name}"
+            for number, field_name in enumerate(
+                EVIDENCE_EDITABLE_FIELDS, start=1
+            )
+        ),
+        "0. 編集を中止する",
+    )
+)
+_EVIDENCE_EDIT_CONFIRMATION_MENU = """1. この内容で保存
+0. 中止"""
+_EVIDENCE_VERIFICATION_CONFIRMATION_MENU = """1. 確認状態を変更
+0. 中止"""
+_EVIDENCE_ATTACH_CONFIRMATION_MENU = """1. この関連付けを保存
+0. 中止"""
+_EVIDENCE_DETACH_CONFIRMATION_MENU = """1. この関連を解除
+0. 中止"""
+_EVIDENCE_DELETE_CONFIRMATION_MENU = """1. 削除手続きを続ける
+0. 中止"""
+_EVIDENCE_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中はEvidenceを変更できません。"
+)
 
 _CSV_EXPORT_MENU = """CSV出力
 
@@ -2119,12 +2178,840 @@ def _run_literature_detail(
         return False
     if not histories:
         output_func("この文献には使用履歴がありません。")
-        return False
+    else:
+        for usage_history in histories:
+            output_func(_format_usage_history(usage_history))
+            output_func(_RECORD_SEPARATOR)
 
-    for usage_history in histories:
-        output_func(_format_usage_history(usage_history))
-        output_func(_RECORD_SEPARATOR)
+    try:
+        evidence = list_literature_evidence(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if evidence is None:
+        output_func("文献情報の取得中に対象文献が存在しなくなりました。")
+        return False
+    output_func("Structured Evidence:")
+    if not evidence:
+        output_func("Evidence: 0件")
+    else:
+        ai_unverified_count = sum(
+            item.verification == "ai_unverified" for item in evidence
+        )
+        user_verified_count = sum(
+            item.verification == "user_verified" for item in evidence
+        )
+        output_func(f"Evidence件数: {len(evidence)}")
+        output_func(f"ai_unverified件数: {ai_unverified_count}")
+        output_func(f"user_verified件数: {user_verified_count}")
     return False
+
+
+def _format_evidence_list_item(
+    evidence: EvidenceReference, selection_number: int
+) -> str:
+    """Format one Evidence choice without exposing its internal DB ID."""
+    fields = (
+        ("選択番号", selection_number),
+        ("pdf_page", evidence.pdf_page),
+        ("printed_page", evidence.printed_page),
+        ("section", evidence.section),
+        ("subsection", evidence.subsection),
+        ("table_label", evidence.table_label),
+        ("figure_label", evidence.figure_label),
+        ("quote_text", "あり" if evidence.quote_text is not None else "なし"),
+        ("verification", evidence.verification),
+        (
+            "note",
+            "あり"
+            if isinstance(evidence.note, str) and evidence.note.strip()
+            else "なし",
+        ),
+    )
+    return "\n".join(
+        f"{label}: {_display_value(value)}" for label, value in fields
+    )
+
+
+def _format_evidence_values(evidence: EvidenceReference) -> str:
+    """Format complete Evidence metadata for detail and verification review."""
+    fields = (
+        ("pdf_page", evidence.pdf_page),
+        ("printed_page", evidence.printed_page),
+        ("section", evidence.section),
+        ("subsection", evidence.subsection),
+        ("table_label", evidence.table_label),
+        ("figure_label", evidence.figure_label),
+        ("quote_text", evidence.quote_text),
+        ("note", evidence.note),
+        ("verification", evidence.verification),
+        ("created_at", evidence.created_at),
+        ("updated_at", evidence.updated_at),
+    )
+    return "\n".join(
+        f"{label}: {_display_value(value)}" for label, value in fields
+    )
+
+
+def _format_structured_item_link(item: StructuredItemEvidence) -> str:
+    kind_label = "Field link" if item.kind == "field" else "Entity link"
+    lines = [
+        f"{kind_label}: {item.category_label}",
+        item.item_label,
+    ]
+    if item.value_text is not None:
+        lines.append(f"value: {item.value_text}")
+    return "\n".join(lines)
+
+
+def _format_evidence_detail(detail: EvidenceDetail) -> str:
+    lines = ["Evidence詳細:", _format_evidence_values(detail.evidence), ""]
+    lines.append("このEvidenceが支えているstructured item:")
+    if not detail.field_links and not detail.entity_links:
+        lines.append("関連するstructured itemはありません。")
+    else:
+        for item in (*detail.field_links, *detail.entity_links):
+            lines.append(_format_structured_item_link(item))
+            lines.append(_RECORD_SEPARATOR)
+    return "\n".join(lines)
+
+
+def _format_structured_item_choice(
+    item: StructuredItemEvidence, selection_number: int
+) -> str:
+    lines = [
+        f"選択番号: {selection_number}",
+        f"種類: {'Structured field' if item.kind == 'field' else 'Structured entity'}",
+        f"区分: {item.category_label}",
+        f"項目: {item.item_label}",
+    ]
+    if item.value_text is not None:
+        lines.append(f"value: {item.value_text}")
+    lines.append(f"linked Evidence count: {len(item.evidence)}")
+    if item.evidence:
+        lines.extend(
+            f"Evidence {index}: {evidence_locator_summary(evidence)}"
+            for index, evidence in enumerate(item.evidence, start=1)
+        )
+    else:
+        lines.append("linked Evidence: なし")
+    return "\n".join(lines)
+
+
+def _display_evidence_choices(
+    evidence: Sequence[EvidenceReference],
+    output_func: Callable[[str], object],
+) -> None:
+    if not evidence:
+        output_func("このLiteratureにはEvidenceが登録されていません。")
+        return
+    for selection_number, item in enumerate(evidence, start=1):
+        output_func(_format_evidence_list_item(item, selection_number))
+        output_func(_RECORD_SEPARATOR)
+
+
+def _read_evidence_literature(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> tuple[Optional[Literature], Optional[list[EvidenceReference]], bool]:
+    try:
+        raw_literature_id = _read_input(
+            input_func, "対象Literature ID（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return None, None, True
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id, "Literature ID"
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return None, None, False
+    try:
+        literature = get_literature(connection, literature_id)
+        evidence = list_literature_evidence(connection, literature_id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if literature is None or evidence is None:
+        output_func("対象Literatureが見つかりません。")
+        return None, None, False
+    return literature, evidence, False
+
+
+def _select_evidence(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> tuple[
+    Optional[Literature], Optional[EvidenceReference], Optional[int], bool
+]:
+    literature, evidence, interrupted = _read_evidence_literature(
+        connection, input_func, output_func
+    )
+    if interrupted or literature is None or evidence is None:
+        return literature, None, None, interrupted
+    output_func(f"Literature title: {literature.title}")
+    _display_evidence_choices(evidence, output_func)
+    if not evidence:
+        return literature, None, None, False
+    try:
+        raw_selection = _read_input(
+            input_func, "Evidence選択番号（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return literature, None, None, True
+    try:
+        selection = _required_positive_ascii_integer(
+            raw_selection, "Evidence選択番号"
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return literature, None, None, False
+    if selection > len(evidence):
+        output_func("入力エラー: 表示されたEvidence選択番号を入力してください。")
+        return literature, None, None, False
+    return literature, evidence[selection - 1], selection, False
+
+
+def _run_evidence_list(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    literature, evidence, interrupted = _read_evidence_literature(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if literature is None or evidence is None:
+        return False
+    output_func(f"Literature title: {literature.title}")
+    output_func(f"Evidence件数: {len(evidence)}")
+    _display_evidence_choices(evidence, output_func)
+    return False
+
+
+def _run_evidence_detail(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    _, evidence, _, interrupted = _select_evidence(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if evidence is None:
+        return False
+    try:
+        detail = get_evidence_detail(connection, evidence.id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if detail is None:
+        output_func("選択後に対象Evidenceが存在しなくなりました。")
+        return False
+    output_func(_format_evidence_detail(detail))
+    return False
+
+
+def _read_evidence_input_values(
+    input_func: Callable[[str], str],
+) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for field_name in EVIDENCE_EDITABLE_FIELDS:
+        suffix = (
+            "1以上のASCII数字、空欄で未登録"
+            if field_name == "pdf_page"
+            else "空欄で未登録"
+        )
+        raw_value = _read_input(input_func, f"{field_name}（{suffix}）: ")
+        if field_name == "pdf_page":
+            value = _optional_ascii_integer(raw_value, field_name)
+            if value is not None and value < 1:
+                raise ValueError("pdf_pageは1以上の整数で入力してください。")
+            values[field_name] = value
+        else:
+            values[field_name] = _optional_unmodified_text(raw_value)
+    return values
+
+
+def _format_evidence_preview_values(
+    values: Mapping[str, object], *, verification: str
+) -> str:
+    return "\n".join(
+        (
+            *(
+                f"{field_name}: {_display_value(values.get(field_name))}"
+                for field_name in EVIDENCE_EDITABLE_FIELDS
+            ),
+            f"verification: {verification}",
+        )
+    )
+
+
+def _confirm_evidence_action(
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+    menu: str,
+) -> tuple[bool, bool]:
+    while True:
+        output_func(menu)
+        try:
+            choice = _read_input(input_func, _MENU_PROMPT).strip()
+        except (EOFError, KeyboardInterrupt):
+            return False, True
+        if choice == "0":
+            return False, False
+        if choice == "1":
+            return True, False
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+
+def _run_evidence_create(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_EVIDENCE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    literature, _, interrupted = _read_evidence_literature(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if literature is None:
+        return False
+    try:
+        values = _read_evidence_input_values(input_func)
+    except (EOFError, KeyboardInterrupt):
+        return True
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+    output_func("Evidence保存前Preview:")
+    output_func(
+        _format_evidence_preview_values(values, verification="ai_unverified")
+    )
+    confirmed, interrupted = _confirm_evidence_action(
+        input_func,
+        output_func,
+        _EVIDENCE_CREATE_CONFIRMATION_MENU,
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Evidenceの保存を中止しました。")
+        return False
+    try:
+        create_review_evidence(
+            connection,
+            literature.id,
+            **values,
+            confirmed=True,
+        )
+    except ValueError as error:
+        output_func(f"Evidence作成エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    output_func("Evidenceを保存しました。確認状態: ai_unverified")
+    return False
+
+
+def _run_evidence_edit(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_EVIDENCE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    _, evidence, _, interrupted = _select_evidence(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if evidence is None:
+        return False
+    output_func("現在のEvidence:")
+    output_func(_format_evidence_values(evidence))
+    output_func(_EVIDENCE_EDIT_FIELD_MENU)
+    try:
+        raw_field_choice = _read_input(input_func, _MENU_PROMPT)
+    except (EOFError, KeyboardInterrupt):
+        return True
+    field_choice = raw_field_choice.strip()
+    if field_choice == "0":
+        output_func("Evidence編集を中止しました。")
+        return False
+    try:
+        field_number = _required_positive_ascii_integer(
+            field_choice, "編集項目番号"
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+    if field_number > len(EVIDENCE_EDITABLE_FIELDS):
+        output_func("入力エラー: 0〜8のいずれかを選択してください。")
+        return False
+    field_name = EVIDENCE_EDITABLE_FIELDS[field_number - 1]
+    try:
+        raw_value = _read_input(
+            input_func,
+            f"新しい{field_name}（空欄で未登録）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+    try:
+        if field_name == "pdf_page":
+            new_value = _optional_ascii_integer(raw_value, field_name)
+            if new_value is not None and new_value < 1:
+                raise ValueError("pdf_pageは1以上の整数で入力してください。")
+        else:
+            new_value = _optional_unmodified_text(raw_value)
+        preview = build_evidence_edit_preview(
+            connection, evidence.id, {field_name: new_value}
+        )
+    except ValueError as error:
+        output_func(f"Evidence編集エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if preview is None:
+        output_func("選択後に対象Evidenceが存在しなくなりました。")
+        return False
+    preview_values = {
+        name: getattr(preview.original, name)
+        for name in EVIDENCE_EDITABLE_FIELDS
+    }
+    preview_values.update(dict(preview.updates))
+    output_func("Evidence更新前Preview:")
+    output_func(
+        _format_evidence_preview_values(
+            preview_values,
+            verification=preview.verification_after_save,
+        )
+    )
+    if (
+        preview.original.verification == "user_verified"
+        and preview.substantive_change
+    ):
+        output_func(
+            "根拠位置または原文を変更するため、"
+            "確認状態はai_unverifiedへ戻ります"
+        )
+    confirmed, interrupted = _confirm_evidence_action(
+        input_func,
+        output_func,
+        _EVIDENCE_EDIT_CONFIRMATION_MENU,
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Evidence更新を中止しました。")
+        return False
+    try:
+        updated = save_evidence_edit(connection, preview, confirmed=True)
+    except ValueError as error:
+        output_func(f"Evidence編集エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if not updated:
+        output_func("確認後に対象Evidenceが存在しなくなりました。")
+        return False
+    output_func("Evidenceを更新しました。")
+    return False
+
+
+def _run_evidence_verification(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_EVIDENCE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    _, evidence, _, interrupted = _select_evidence(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if evidence is None:
+        return False
+    try:
+        detail = get_evidence_detail(connection, evidence.id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if detail is None:
+        output_func("選択後に対象Evidenceが存在しなくなりました。")
+        return False
+    output_func(_format_evidence_detail(detail))
+    target = (
+        "user_verified"
+        if evidence.verification == "ai_unverified"
+        else "ai_unverified"
+    )
+    if target == "user_verified":
+        output_func(
+            "原著の該当箇所を確認した場合のみ確認済みにしてください。"
+        )
+    else:
+        output_func("このEvidenceの確認済み状態を取り消します。")
+    output_func(f"確認状態: {evidence.verification} → {target}")
+    confirmed, interrupted = _confirm_evidence_action(
+        input_func,
+        output_func,
+        _EVIDENCE_VERIFICATION_CONFIRMATION_MENU,
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Evidence確認状態の変更を中止しました。")
+        return False
+    try:
+        updated = change_evidence_verification(
+            connection, evidence.id, target, confirmed=True
+        )
+    except ValueError as error:
+        output_func(f"Evidence確認状態変更エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if not updated:
+        output_func("確認後に対象Evidenceが存在しなくなりました。")
+        return False
+    output_func(f"Evidence確認状態を{target}へ変更しました。")
+    return False
+
+
+def _read_structured_items(
+    connection: sqlite3.Connection,
+    literature_id: int,
+    output_func: Callable[[str], object],
+) -> Optional[list[StructuredItemEvidence]]:
+    try:
+        items = list_structured_items_with_evidence(
+            connection, literature_id
+        )
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if items is None:
+        output_func("対象Literatureが見つかりません。")
+        return None
+    if not items:
+        output_func("このLiteratureにはstructured itemがありません。")
+        return []
+    for selection_number, item in enumerate(items, start=1):
+        output_func(_format_structured_item_choice(item, selection_number))
+        output_func(_RECORD_SEPARATOR)
+    return items
+
+
+def _run_structured_item_evidence_list(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    literature, _, interrupted = _read_evidence_literature(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if literature is None:
+        return False
+    output_func(f"Literature title: {literature.title}")
+    _read_structured_items(connection, literature.id, output_func)
+    return False
+
+
+def _select_structured_item(
+    connection: sqlite3.Connection,
+    literature_id: int,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> tuple[Optional[StructuredItemEvidence], bool]:
+    items = _read_structured_items(connection, literature_id, output_func)
+    if not items:
+        return None, False
+    try:
+        raw_selection = _read_input(
+            input_func, "Structured item選択番号（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return None, True
+    try:
+        selection = _required_positive_ascii_integer(
+            raw_selection, "Structured item選択番号"
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return None, False
+    if selection > len(items):
+        output_func(
+            "入力エラー: 表示されたStructured item選択番号を入力してください。"
+        )
+        return None, False
+    return items[selection - 1], False
+
+
+def _run_evidence_attach(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_EVIDENCE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    literature, evidence, _, interrupted = _select_evidence(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if literature is None or evidence is None:
+        return False
+    item, interrupted = _select_structured_item(
+        connection, literature.id, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if item is None:
+        return False
+    output_func("関連付け内容:")
+    output_func(_format_structured_item_link(item))
+    output_func(f"Evidence: {evidence_locator_summary(evidence)}")
+    confirmed, interrupted = _confirm_evidence_action(
+        input_func, output_func, _EVIDENCE_ATTACH_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Evidenceの関連付けを中止しました。")
+        return False
+    try:
+        attached = attach_evidence(
+            connection,
+            item.kind,
+            item.owner_id,
+            evidence.id,
+            confirmed=True,
+        )
+    except ValueError as error:
+        output_func(f"Evidence関連付けエラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if attached:
+        output_func("Evidenceをstructured itemへ関連付けました。")
+    else:
+        output_func("同じ関連付けが既に存在します。重複作成しませんでした。")
+    return False
+
+
+def _run_evidence_detach(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_EVIDENCE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    _, evidence, _, interrupted = _select_evidence(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if evidence is None:
+        return False
+    try:
+        detail = get_evidence_detail(connection, evidence.id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if detail is None:
+        output_func("選択後に対象Evidenceが存在しなくなりました。")
+        return False
+    links = [*detail.entity_links, *detail.field_links]
+    if not links:
+        output_func("このEvidenceに解除可能な関連はありません。")
+        return False
+    for selection_number, item in enumerate(links, start=1):
+        output_func(f"選択番号: {selection_number}")
+        output_func(_format_structured_item_link(item))
+        output_func(_RECORD_SEPARATOR)
+    try:
+        raw_selection = _read_input(
+            input_func, "解除する関連の選択番号（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+    try:
+        selection = _required_positive_ascii_integer(
+            raw_selection, "関連選択番号"
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+    if selection > len(links):
+        output_func("入力エラー: 表示された関連選択番号を入力してください。")
+        return False
+    item = links[selection - 1]
+    confirmed, interrupted = _confirm_evidence_action(
+        input_func, output_func, _EVIDENCE_DETACH_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Evidenceの関連解除を中止しました。")
+        return False
+    try:
+        detached = detach_evidence(
+            connection,
+            item.kind,
+            item.owner_id,
+            evidence.id,
+            confirmed=True,
+        )
+    except ValueError as error:
+        output_func(f"Evidence関連解除エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if detached:
+        output_func("Evidenceとstructured itemの関連を解除しました。")
+    else:
+        output_func("確認後に対象の関連が存在しなくなりました。")
+    return False
+
+
+def _run_evidence_delete(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_EVIDENCE_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    literature, evidence, selection_number, interrupted = _select_evidence(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if literature is None or evidence is None or selection_number is None:
+        return False
+    try:
+        detail = get_evidence_detail(connection, evidence.id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if detail is None:
+        output_func("選択後に対象Evidenceが存在しなくなりました。")
+        return False
+    output_func("Evidence削除対象と影響:")
+    output_func(f"Literature title: {literature.title}")
+    output_func(f"Evidence locator: {evidence_locator_summary(evidence)}")
+    output_func(f"verification: {evidence.verification}")
+    output_func(f"field link数: {len(detail.field_links)}")
+    output_func(f"entity link数: {len(detail.entity_links)}")
+    output_func("警告: Evidence本体は削除されます。")
+    output_func("Evidence linkも削除されます。")
+    output_func("structured entity / field本体は削除されません。")
+    output_func("Literature本体は削除されません。")
+    output_func("PDFファイルは削除されません。")
+    confirmed, interrupted = _confirm_evidence_action(
+        input_func, output_func, _EVIDENCE_DELETE_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Evidence削除を中止しました。")
+        return False
+    final_prompt = (
+        "削除を確定するためEvidence選択番号 "
+        f"{selection_number} を再入力してください（0で中止）: "
+    )
+    while True:
+        try:
+            raw_final = _read_input(input_func, final_prompt)
+        except (EOFError, KeyboardInterrupt):
+            return True
+        final_value = raw_final.strip()
+        if final_value == "0":
+            output_func("Evidence削除を中止しました。")
+            return False
+        try:
+            confirmed_number = _required_positive_ascii_integer(
+                raw_final, "Evidence選択番号"
+            )
+        except ValueError:
+            output_func(
+                f"入力エラー: Evidence選択番号 {selection_number} または0を入力してください。"
+            )
+            continue
+        if confirmed_number == selection_number:
+            break
+        output_func(
+            f"入力エラー: Evidence選択番号 {selection_number} または0を入力してください。"
+        )
+    try:
+        deleted = delete_review_evidence(
+            connection, evidence.id, confirmed=True
+        )
+    except ValueError as error:
+        output_func(f"Evidence削除エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if not deleted:
+        output_func("確認後に対象Evidenceが存在しなくなりました。")
+        return False
+    output_func("Evidenceを削除しました。")
+    return False
+
+
+def _run_evidence_management(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    actions = {
+        "1": _run_evidence_list,
+        "2": _run_evidence_detail,
+        "3": _run_evidence_create,
+        "4": _run_evidence_edit,
+        "5": _run_evidence_verification,
+        "6": _run_structured_item_evidence_list,
+        "7": _run_evidence_attach,
+        "8": _run_evidence_detach,
+        "9": _run_evidence_delete,
+    }
+    while True:
+        output_func(_EVIDENCE_MANAGEMENT_MENU)
+        try:
+            choice = _read_input(input_func, _MENU_PROMPT).strip()
+        except (EOFError, KeyboardInterrupt):
+            return True
+        if choice == "0":
+            return False
+        action = actions.get(choice)
+        if action is None:
+            output_func(_INVALID_EVIDENCE_MENU_MESSAGE)
+            continue
+        if action(connection, input_func, output_func):
+            return True
 
 
 def _parse_json_file_path(raw_path: str) -> Path:
@@ -2332,6 +3219,7 @@ def run_cli(
             "9",
             "10",
             "11",
+            "12",
         }:
             output_func(_INVALID_MENU_MESSAGE)
             continue
@@ -2416,6 +3304,13 @@ def run_cli(
                 backup_directory,
             )
         elif choice == "11" and _run_structured_import(
+            connection,
+            input_func,
+            output_func,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None
+        elif choice == "12" and _run_evidence_management(
             connection,
             input_func,
             output_func,
