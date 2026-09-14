@@ -115,7 +115,7 @@ Phase 2-5はPython standard libraryとlocal SQLiteだけを使用し、追加料
 
 ## 14. Boundary with Phase 2-6
 
-Phase 2-5はEvidence metadataを確認・管理するStepである。`pdf_path`からPDFを開く、該当pageへjumpする、PDF viewerと連携する機能はPhase 2-6 Original PDF Evidence Navigationの責務である。
+Phase 2-5はEvidence metadataを確認・管理するStepである。`pdf_path`からPDFを開くPhase 2-6 Original PDF Evidence Navigationの詳細は[`ORIGINAL_PDF_EVIDENCE_NAVIGATION.md`](ORIGINAL_PDF_EVIDENCE_NAVIGATION.md)を参照する。Phase 2-6 v1はautomatic page jumpやPDF viewer UI scriptingを行わず、locator表示と利用者による手動page移動案内を扱う。
 
 ## 15. Intentionally out of scope
 

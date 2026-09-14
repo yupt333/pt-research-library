@@ -378,7 +378,7 @@ Scope:
 The full schema and migration design is recorded in
 `docs/STRUCTURED_DATA_MODEL.md`.
 
-## Latest Completed Phase 2 Step
+## Additional Completed Phase 2 Steps
 
 ### Phase 2-4: Structured Data Repository + Import Preview
 
@@ -409,11 +409,13 @@ Scope:
 The full workflow is recorded in
 `docs/STRUCTURED_IMPORT_WORKFLOW.md`.
 
-## Current Step
-
 ### Phase 2-5: Evidence Reference
 
-Status: current step, in progress
+Status: completed and pushed
+
+Completion commit: `982141ef14f315e05bec72e409ebcaa605d938b7`
+
+Full regression at completion: 613 tests passed
 
 Scope:
 
@@ -433,20 +435,34 @@ Scope:
 The full workflow is recorded in
 `docs/EVIDENCE_REFERENCE_WORKFLOW.md`.
 
+## Current Step
+
+### Phase 2-6: Original PDF Evidence Navigation
+
+Status: current step, in progress
+
+Scope:
+
+- connect one selected same-Literature Evidence to `literature.pdf_path`
+- validate local PDF paths at use time without modifying stored paths
+- resolve relative paths against the application project root
+- show Evidence verification and all locator fields before opening
+- require explicit confirmation before macOS `open`
+- revalidate Evidence ownership and PDF path immediately before opening
+- show locator fields again after successful opening
+- provide manual Preview `⌘⌥G` guidance only when `pdf_page` exists
+- preserve all Evidence, structured, and Literature verification/status values
+- local single-user operation and zero additional cost
+- no schema change, PDF parsing, automatic page jump, UI scripting, API,
+  network, cloud, GUI, Comparison, Research Project, or dependency
+
+The full workflow is recorded in
+`docs/ORIGINAL_PDF_EVIDENCE_NAVIGATION.md`.
+
 ## Phase 2 Planned Steps
 
 Phase 2 Steps must be performed in the following order. A later Step must not
 be implemented early without an approved roadmap change.
-
-### Phase 2-6: Original PDF Evidence Navigation
-
-Status: planned
-
-Includes:
-
-- connect `pdf_path` and Evidence
-- navigation from Evidence metadata to the original source
-- no automated PDF analysis at this Step
 
 ### Phase 2-7: Multi-Literature Comparison Matrix
 

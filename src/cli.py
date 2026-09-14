@@ -26,6 +26,15 @@ from src.evidence_review import (
     save_evidence_edit,
 )
 from src.models import EvidenceReference, Literature, Tag, UsageHistory
+from src.pdf_navigation import (
+    PDF_OPEN_FAILURE_MESSAGE,
+    PdfNavigationError,
+    PdfNavigationTarget,
+    PdfOpenResult,
+    build_navigation_target,
+    format_locator_summary,
+    open_evidence_pdf,
+)
 from src.repository import (
     add_literature,
     attach_tag_to_literature,
@@ -105,9 +114,10 @@ _EVIDENCE_MANAGEMENT_MENU = """Evidence確認・管理
 7. EvidenceをStructured itemへ関連付け
 8. EvidenceとStructured itemの関連解除
 9. Evidence削除
+10. Evidenceから原著PDFを開く
 0. メインメニューへ戻る"""
 _INVALID_EVIDENCE_MENU_MESSAGE = (
-    "入力エラー: 0〜9のいずれかを選択してください。"
+    "入力エラー: 0〜10のいずれかを選択してください。"
 )
 _EVIDENCE_CREATE_CONFIRMATION_MENU = """1. 保存
 0. 中止"""
@@ -131,6 +141,8 @@ _EVIDENCE_ATTACH_CONFIRMATION_MENU = """1. この関連付けを保存
 _EVIDENCE_DETACH_CONFIRMATION_MENU = """1. この関連を解除
 0. 中止"""
 _EVIDENCE_DELETE_CONFIRMATION_MENU = """1. 削除手続きを続ける
+0. 中止"""
+_EVIDENCE_PDF_OPEN_CONFIRMATION_MENU = """1. 原著PDFを開く
 0. 中止"""
 _EVIDENCE_ACTIVE_TRANSACTION_MESSAGE = (
     "アクティブなトランザクション中はEvidenceを変更できません。"
@@ -2982,11 +2994,102 @@ def _run_evidence_delete(
     return False
 
 
+def _format_pdf_navigation_preview(target: PdfNavigationTarget) -> str:
+    """Format a researcher-facing preview without emphasizing internal IDs."""
+    return "\n".join(
+        (
+            "Navigation Preview:",
+            f"Literature title: {target.literature_title}",
+            f"PDF path: {_display_value(target.stored_pdf_path)}",
+            f"Evidence verification: {target.verification}",
+            format_locator_summary(target),
+        )
+    )
+
+
+def _run_evidence_pdf_navigation(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+    *,
+    project_root: object | None,
+    pdf_opener: Callable[..., PdfOpenResult],
+) -> bool:
+    literature, evidence, _, interrupted = _select_evidence(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if literature is None or evidence is None:
+        return False
+
+    try:
+        target = build_navigation_target(
+            connection,
+            literature.id,
+            evidence.id,
+            project_root=project_root,
+        )
+    except PdfNavigationError as error:
+        output_func(f"PDF navigationエラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    output_func(_format_pdf_navigation_preview(target))
+    if not target.can_open:
+        output_func(target.path_error or PDF_OPEN_FAILURE_MESSAGE)
+        return False
+
+    confirmed, interrupted = _confirm_evidence_action(
+        input_func,
+        output_func,
+        _EVIDENCE_PDF_OPEN_CONFIRMATION_MENU,
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("原著PDFを開く操作を中止しました。")
+        return False
+
+    try:
+        result = pdf_opener(
+            connection,
+            target,
+            project_root=project_root,
+        )
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+
+    if not result.success:
+        output_func(PDF_OPEN_FAILURE_MESSAGE)
+        if result.error_message not in {None, PDF_OPEN_FAILURE_MESSAGE}:
+            output_func(f"PDF navigationエラー: {result.error_message}")
+        return False
+
+    output_func("原著PDFを開きました。")
+    output_func("確認位置:")
+    output_func(format_locator_summary(result.target))
+    if result.target.pdf_page is not None:
+        output_func(
+            "PreviewでPDF page "
+            f"{result.target.pdf_page}へ移動:\n"
+            f"⌘⌥G → {result.target.pdf_page}"
+        )
+    return False
+
+
 def _run_evidence_management(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
     output_func: Callable[[str], object],
+    *,
+    project_root: object | None = None,
+    pdf_opener: Optional[Callable[..., PdfOpenResult]] = None,
 ) -> bool:
+    navigation_opener = open_evidence_pdf if pdf_opener is None else pdf_opener
     actions = {
         "1": _run_evidence_list,
         "2": _run_evidence_detail,
@@ -3008,6 +3111,16 @@ def _run_evidence_management(
             return False
         action = actions.get(choice)
         if action is None:
+            if choice == "10":
+                if _run_evidence_pdf_navigation(
+                    connection,
+                    input_func,
+                    output_func,
+                    project_root=project_root,
+                    pdf_opener=navigation_opener,
+                ):
+                    return True
+                continue
             output_func(_INVALID_EVIDENCE_MENU_MESSAGE)
             continue
         if action(connection, input_func, output_func):
@@ -3192,8 +3305,19 @@ def run_cli(
     output_func: Callable[[str], object] = print,
     export_directory: object = "exports",
     backup_directory: object = "backups",
+    project_root: object | None = None,
+    pdf_opener: Optional[Callable[..., PdfOpenResult]] = None,
 ) -> None:
     """Run the interactive menu using an existing SQLite connection."""
+    navigation_project_root = project_root
+    if navigation_project_root is None:
+        try:
+            export_path = Path(export_directory).expanduser()
+        except (TypeError, ValueError, RuntimeError):
+            pass
+        else:
+            if export_path.is_absolute():
+                navigation_project_root = export_path.parent
     last_search_result_ids: Optional[tuple[int, ...]] = None
     while True:
         output_func(_MAIN_MENU)
@@ -3314,6 +3438,8 @@ def run_cli(
             connection,
             input_func,
             output_func,
+            project_root=navigation_project_root,
+            pdf_opener=pdf_opener,
         ):
             output_func(_EXIT_MESSAGE)
             return None

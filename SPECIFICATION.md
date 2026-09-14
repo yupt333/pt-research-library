@@ -750,6 +750,18 @@ Attach / detachは同一Literature内だけを許可し、duplicate attachは重
 
 Read workflowはcaller transactionを変更しない。Evidence reviewのwrite workflowはcallerのactive transaction中に拒否し、commitまたはrollbackしない。Phase 2-5ではschema migration、PDF open / page jump、PDF parsing、OCR、API、network、cloud、GUI、Comparison、Research Projectを実装しない。詳細は[`docs/EVIDENCE_REFERENCE_WORKFLOW.md`](docs/EVIDENCE_REFERENCE_WORKFLOW.md)を正式な参照先とする。
 
+### 20.15 Original PDF Evidence Navigation
+
+Phase 2-6では、保存済みEvidenceを明示選択し、そのEvidenceが属するLiteratureの`pdf_path`からローカル原著PDFを開く。Navigation PreviewではLiterature title、stored PDF path、Evidence verification、PDF page、printed page、section、subsection、Table、Figureを表示し、`1. 原著PDFを開く / 0. 中止`の明示操作後だけmacOS標準`open`を実行する。
+
+`pdf_page`はPDF viewer上の1-based page index、`printed_page`は誌面page labelであり、自動変換または同一視しない。Automatic Preview UI scripting、Accessibility permission、keystroke送信、sleep依存のpage jumpを行わない。Open成功後にlocatorを再表示し、`pdf_page`がある場合だけ利用者がPreviewで`⌘⌥G → N`により移動できることを案内する。
+
+`pdf_path`は使用時だけ検証する。`~`を展開し、absolute pathはそのまま、relative pathはcurrent working directoryではなくapplication project rootを基準に解決する。Existing regular PDF fileだけを許可し、directory、non-PDF、nonexistent pathを拒否する。Symlinkは解決後のtargetを検証する。Stored pathの自動修正、DB write back、同名file探索、copy、move、rename、PDF writeを行わない。
+
+Navigation target構築時とopen直前にLiterature / Evidence ownershipを確認し、cross-Literatureまたはstale EvidenceでPDFを開かない。`open`はargv list、`shell=False`で呼び、runnerをtest時に差し替え可能とする。Failure時はsuccessを表示せずstderrをそのまま大量表示しない。
+
+PDF openはread-only DB featureであり、active caller transactionをcommit、rollback、closeしない。PDFを開いただけではEvidence、structured field / entity、Literature、AI summary、adoptionのverification/statusを変更しない。Schema versionは1のまま、external dependency、network、API、cloud、追加料金を導入しない。詳細は[`docs/ORIGINAL_PDF_EVIDENCE_NAVIGATION.md`](docs/ORIGINAL_PDF_EVIDENCE_NAVIGATION.md)を正式な参照先とする。
+
 ---
 
 ## 21. 完了条件
@@ -800,6 +812,6 @@ Codexは以下を厳守する。
 
 Phase 1はSteps 0〜9がcompleted and pushed、completion assessmentはGO、final regressionは504 tests passedである。Phase 1の検証済みproduction behaviorをPhase 2以降の基盤として保護する。
 
-現在はPhase 2であり、Phase 2-0 Product direction / roadmap freeze、Phase 2-1 Literature Detail Information Architecture、Phase 2-2 ChatGPT Structured Import Contract v1、Phase 2-3 Structured Research Data Model、Phase 2-4 Structured Data Repository + Import Previewはcompleted and pushedである。Phase 2-4 completion commitは`32d62034867c6af0e06055a1c09cb46cd887ef25`、completion時のfull regressionは591 tests passedである。Current StepはPhase 2-5 Evidence Reference、Statusはcurrent step, in progressである。Phase 2-5はlocal single-user、zero additional cost、Evidence list/detail/create/edit/verification、structured item backlink、same-Literature attach / detach、安全な削除、CLI menu 12を対象とし、schema変更、PDF navigation、API、network、cloud、GUI、Comparison、Research Projectを実装しない。
+現在はPhase 2であり、Phase 2-0 Product direction / roadmap freeze、Phase 2-1 Literature Detail Information Architecture、Phase 2-2 ChatGPT Structured Import Contract v1、Phase 2-3 Structured Research Data Model、Phase 2-4 Structured Data Repository + Import Preview、Phase 2-5 Evidence Referenceはcompleted and pushedである。Phase 2-5 completion commitは`982141ef14f315e05bec72e409ebcaa605d938b7`、completion時のfull regressionは613 tests passedである。Current StepはPhase 2-6 Original PDF Evidence Navigation、Statusはcurrent step, in progressである。Phase 2-6はlocal single-user、zero additional cost、Evidenceから`Literature.pdf_path`へのownership-checked navigation、local PDF path validation、明示確認後のmacOS `open`、locator再表示と手動page移動案内を対象とし、schema変更、PDF parsing、automatic page jump、UI scripting、API、network、cloud、GUI、Comparison、Research Projectを実装しない。
 
 仕様またはロードマップを変更する場合は、変更理由、既存仕様・データ・テスト・費用への影響を事前に説明し、必要なユーザー承認を得る。

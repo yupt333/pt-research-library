@@ -180,9 +180,14 @@ class CliTestCase(unittest.TestCase):
         connection: sqlite3.Connection | None = None,
         export_directory: object | None = None,
         backup_directory: object | None = None,
+        project_root: object | None = None,
+        pdf_opener: object | None = None,
     ) -> tuple[object, InputFeeder, list[str]]:
         feeder = InputFeeder(actions)
         outputs: list[str] = []
+        options = {}
+        if pdf_opener is not None:
+            options["pdf_opener"] = pdf_opener
         result = run_cli(
             self.connection if connection is None else connection,
             input_func=feeder,
@@ -197,6 +202,10 @@ class CliTestCase(unittest.TestCase):
                 if backup_directory is None
                 else backup_directory
             ),
+            project_root=(
+                self.directory if project_root is None else project_root
+            ),
+            **options,
         )
         return result, feeder, outputs
 
@@ -13934,8 +13943,39 @@ class CliTestCase(unittest.TestCase):
             self.connection,
             feeder,
             outputs.append,
+            project_root=None,
+            pdf_opener=None,
         )
         self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 0)
+        self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+
+    def test_absolute_application_export_path_supplies_navigation_project_root(
+        self,
+    ) -> None:
+        feeder = InputFeeder(["12", "0"])
+        outputs: list[str] = []
+        export_directory = self.directory / "exports"
+
+        with patch.object(
+            cli_module,
+            "_run_evidence_management",
+            return_value=True,
+        ) as evidence_managed:
+            result = run_cli(
+                self.connection,
+                input_func=feeder,
+                output_func=outputs.append,
+                export_directory=export_directory,
+            )
+
+        self.assertIsNone(result)
+        evidence_managed.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+            project_root=self.directory,
+            pdf_opener=None,
+        )
         self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
 
     def test_structured_import_target_id_and_file_errors_return_to_menu(
@@ -14968,7 +15008,7 @@ class CliTestCase(unittest.TestCase):
     def test_evidence_submenu_contract_invalid_navigation_and_interrupts(self) -> None:
         invalid_count = 50
         feeder = InputFeeder(
-            ["12", "", "invalid", *(["10"] * invalid_count), "0", "0"]
+            ["12", "", "invalid", *(["11"] * invalid_count), "0", "0"]
         )
         outputs: list[str] = []
 
@@ -14989,6 +15029,7 @@ class CliTestCase(unittest.TestCase):
             "7. EvidenceをStructured itemへ関連付け",
             "8. EvidenceとStructured itemの関連解除",
             "9. Evidence削除",
+            "10. Evidenceから原著PDFを開く",
             "0. メインメニューへ戻る",
         ):
             self.assertIn(option, cli_module._EVIDENCE_MANAGEMENT_MENU)
@@ -15515,6 +15556,216 @@ class CliTestCase(unittest.TestCase):
             ).fetchone()[0],
             0,
         )
+
+    def test_evidence_pdf_navigation_preview_confirm_and_page_guidance(self) -> None:
+        pdf_path = self.directory / "originals" / "Synthetic 原著.PDF"
+        pdf_path.parent.mkdir()
+        pdf_path.write_bytes(b"synthetic test-only PDF placeholder")
+        literature_id = self.add_record(
+            "Synthetic PDF CLI target",
+            pdf_path="originals/Synthetic 原著.PDF",
+            verification_status="要確認",
+            ai_summary_status="未確認",
+            adoption_status="採用候補",
+        )
+        evidence_id = create_evidence_reference(
+            self.connection,
+            literature_id,
+            pdf_page=5,
+            printed_page="164",
+            section="Results",
+            subsection="Primary",
+            table_label="Table 1",
+            figure_label="Figure 2",
+            verification="ai_unverified",
+        )
+        before = self.table_snapshot()
+        calls = []
+
+        def opener(connection, target, *, project_root):
+            calls.append((connection, target, project_root))
+            return cli_module.PdfOpenResult(True, target)
+
+        _, _, outputs = self.run_with_actions(
+            [
+                "12",
+                "10",
+                str(literature_id),
+                "1",
+                "invalid",
+                "1",
+                "0",
+                "0",
+            ],
+            pdf_opener=opener,
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertIs(calls[0][0], self.connection)
+        self.assertEqual(calls[0][1].evidence_id, evidence_id)
+        self.assertEqual(calls[0][1].resolved_pdf_path, pdf_path.resolve())
+        self.assertEqual(calls[0][2], self.directory)
+        text = "\n".join(outputs)
+        for expected in (
+            "Navigation Preview:",
+            "Literature title: Synthetic PDF CLI target",
+            "PDF path: originals/Synthetic 原著.PDF",
+            "Evidence verification: ai_unverified",
+            "PDF page: 5",
+            "Printed page: 164",
+            "Section: Results",
+            "Subsection: Primary",
+            "Table: Table 1",
+            "Figure: Figure 2",
+            "原著PDFを開きました。",
+            "確認位置:",
+            "PreviewでPDF page 5へ移動:",
+            "⌘⌥G → 5",
+        ):
+            self.assertIn(expected, text)
+        self.assertIn(cli_module._INVALID_CONFIRMATION_MESSAGE, outputs)
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            get_evidence_reference(self.connection, evidence_id).verification,
+            "ai_unverified",
+        )
+        literature = get_literature(self.connection, literature_id)
+        self.assertEqual(literature.verification_status, "要確認")
+        self.assertEqual(literature.ai_summary_status, "未確認")
+        self.assertEqual(literature.adoption_status, "採用候補")
+
+    def test_evidence_pdf_navigation_cancel_interrupt_and_zero_evidence_never_open(
+        self,
+    ) -> None:
+        pdf_path = self.directory / "cancel.pdf"
+        pdf_path.write_bytes(b"synthetic")
+        literature_id = self.add_record(
+            "Synthetic PDF cancel target", pdf_path=str(pdf_path)
+        )
+        create_evidence_reference(
+            self.connection, literature_id, section="Methods"
+        )
+        empty_literature_id = self.add_record(
+            "Synthetic empty PDF target", pdf_path=str(pdf_path)
+        )
+        calls = []
+
+        def opener(connection, target, *, project_root):
+            calls.append((connection, target, project_root))
+            return cli_module.PdfOpenResult(True, target)
+
+        _, _, cancel_outputs = self.run_with_actions(
+            ["12", "10", str(literature_id), "1", "0", "0", "0"],
+            pdf_opener=opener,
+        )
+        self.assertIn("原著PDFを開く操作を中止しました。", cancel_outputs)
+        self.assertEqual(calls, [])
+
+        _, _, empty_outputs = self.run_with_actions(
+            ["12", "10", str(empty_literature_id), "0", "0"],
+            pdf_opener=opener,
+        )
+        self.assertIn(
+            "このLiteratureにはEvidenceが登録されていません。",
+            empty_outputs,
+        )
+        self.assertEqual(calls, [])
+
+        for interruption in (EOFError("PDF confirmation EOF"), KeyboardInterrupt()):
+            with self.subTest(interruption=type(interruption).__name__):
+                _, _, outputs = self.run_with_actions(
+                    ["12", "10", str(literature_id), "1", interruption],
+                    pdf_opener=opener,
+                )
+                self.assertIn(cli_module._EXIT_MESSAGE, outputs)
+                self.assertEqual(calls, [])
+
+    def test_evidence_pdf_navigation_path_and_open_failures_are_safe(self) -> None:
+        missing_literature_id = self.add_record(
+            "Synthetic missing PDF target", pdf_path="missing source.pdf"
+        )
+        create_evidence_reference(
+            self.connection, missing_literature_id, pdf_page=3
+        )
+        blank_literature_id = self.add_record(
+            "Synthetic blank PDF target", pdf_path="   "
+        )
+        create_evidence_reference(
+            self.connection, blank_literature_id, section="Results"
+        )
+        calls = []
+
+        def opener(connection, target, *, project_root):
+            calls.append((connection, target, project_root))
+            return cli_module.PdfOpenResult(True, target)
+
+        _, _, missing_outputs = self.run_with_actions(
+            ["12", "10", str(missing_literature_id), "1", "0", "0"],
+            pdf_opener=opener,
+        )
+        missing_text = "\n".join(missing_outputs)
+        self.assertIn("PDF path: missing source.pdf", missing_text)
+        self.assertIn("PDFファイルが見つかりません。", missing_text)
+        self.assertNotIn(cli_module._EVIDENCE_PDF_OPEN_CONFIRMATION_MENU, missing_outputs)
+
+        _, _, blank_outputs = self.run_with_actions(
+            ["12", "10", str(blank_literature_id), "1", "0", "0"],
+            pdf_opener=opener,
+        )
+        self.assertIn("pdf_path未登録", "\n".join(blank_outputs))
+        self.assertIn("文献編集", "\n".join(blank_outputs))
+        self.assertEqual(calls, [])
+
+        valid_path = self.directory / "failure.pdf"
+        valid_path.write_bytes(b"synthetic")
+        failure_literature_id = self.add_record(
+            "Synthetic open failure", pdf_path=str(valid_path)
+        )
+        create_evidence_reference(
+            self.connection, failure_literature_id, printed_page="S8"
+        )
+
+        def failing_opener(connection, target, *, project_root):
+            calls.append((connection, target, project_root))
+            return cli_module.PdfOpenResult(
+                False, target, cli_module.PDF_OPEN_FAILURE_MESSAGE
+            )
+
+        _, _, failure_outputs = self.run_with_actions(
+            ["12", "10", str(failure_literature_id), "1", "1", "0", "0"],
+            pdf_opener=failing_opener,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertIn(cli_module.PDF_OPEN_FAILURE_MESSAGE, failure_outputs)
+        self.assertNotIn("原著PDFを開きました。", failure_outputs)
+        self.assertNotIn("⌘⌥G", "\n".join(failure_outputs))
+
+    def test_evidence_pdf_navigation_without_pdf_page_has_no_jump_guidance(
+        self,
+    ) -> None:
+        pdf_path = self.directory / "no-page.pdf"
+        pdf_path.write_bytes(b"synthetic")
+        literature_id = self.add_record(
+            "Synthetic no-page target", pdf_path=str(pdf_path)
+        )
+        create_evidence_reference(
+            self.connection,
+            literature_id,
+            printed_page="S12",
+            section="Discussion",
+        )
+
+        def opener(connection, target, *, project_root):
+            return cli_module.PdfOpenResult(True, target)
+
+        _, _, outputs = self.run_with_actions(
+            ["12", "10", str(literature_id), "1", "1", "0", "0"],
+            pdf_opener=opener,
+        )
+        text = "\n".join(outputs)
+        self.assertIn("PDF page: 未登録", text)
+        self.assertIn("Printed page: S12", text)
+        self.assertNotIn("⌘⌥G", text)
 
     def test_cli_creates_no_database_export_or_backup_artifacts(self) -> None:
         self.populate_search_records()

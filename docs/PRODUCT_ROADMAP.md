@@ -8,10 +8,10 @@
 - Phase 1 completion assessment: GO
 - Phase 1 final regression: 504 tests passed
 - Current phase: Phase 2
-- Current step: Phase 2-5 Evidence Reference
+- Current step: Phase 2-6 Original PDF Evidence Navigation
 - Current step status: in progress
 
-Phase 2-0、Phase 2-1、Phase 2-2、Phase 2-3、Phase 2-4はcompleted and pushedである。Phase 2-4 completion commitは`32d62034867c6af0e06055a1c09cb46cd887ef25`、completion時のfull regressionは591 tests passedである。Phase 2-5はEvidence metadataの一覧・詳細・作成・編集・確認状態、structured item backlink、manual attach / detach、安全な削除、CLI menu 12を対象とし、schema変更、PDF navigation、network、API、cloud、server、external dependencyを導入しない。
+Phase 2-0、Phase 2-1、Phase 2-2、Phase 2-3、Phase 2-4、Phase 2-5はcompleted and pushedである。Phase 2-5 completion commitは`982141ef14f315e05bec72e409ebcaa605d938b7`、completion時のfull regressionは613 tests passedである。Phase 2-6はEvidenceと`literature.pdf_path`を安全に接続し、明示確認後にローカル原著PDFを開き、locatorと手動page移動案内を表示する。Schema変更、PDF parsing、automatic page jump、UI scripting、network、API、cloud、server、external dependencyを導入しない。
 
 ## 2. Product Goal
 
@@ -449,7 +449,10 @@ Status: completed and pushed
 
 ### Phase 2-5: Evidence Reference
 
-Status: current step, in progress
+Status: completed and pushed
+
+- completion commit: `982141ef14f315e05bec72e409ebcaa605d938b7`
+- completion時full regression: 613 tests passed
 
 - page / section / table / figure / original text / verification
 - human-readable structured item backlink
@@ -461,11 +464,16 @@ Status: current step, in progress
 
 ### Phase 2-6: Original PDF Evidence Navigation
 
-Status: planned
+Status: current step, in progress
 
-- `pdf_path`とEvidenceを接続
-- page等から原著確認へ戻れる導線
-- PDF解析の自動化はまだ行わない
+- same-Literature ownershipを確認して`pdf_path`とEvidenceを接続
+- `~`、absolute、application-project-root-relative pathの使用時validation
+- Navigation Previewと明示確認後のmacOS `open`
+- open直前のEvidence / path再確認
+- open後のlocator再表示と`pdf_page`がある場合だけの手動`⌘⌥G`案内
+- Evidence、structured item、Literature statusを自動変更しないread-only DB behavior
+- schema変更、PDF解析、automatic page jump、UI scripting、network、API、cloud、external dependencyなし
+- 詳細は[`ORIGINAL_PDF_EVIDENCE_NAVIGATION.md`](ORIGINAL_PDF_EVIDENCE_NAVIGATION.md)
 
 ### Phase 2-7: Multi-Literature Comparison Matrix
 
