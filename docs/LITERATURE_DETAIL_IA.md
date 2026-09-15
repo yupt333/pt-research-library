@@ -472,6 +472,8 @@ Phase 2-7以降の比較画面と意味を共有しやすいlabelと単位を用
 
 Comparisonへ送る単位はOutcome nameだけではなく、definition、calculation、contextを含むlogical outcomeである。同名Outcomeを自動統合しない。Phase 2-1ではComparison UI、比較可能性判定、comparison statusを実装しない。
 
+Phase 2-7で実装するcomparison read modelと表示境界は[`MULTI_LITERATURE_COMPARISON.md`](MULTI_LITERATURE_COMPARISON.md)を参照する。
+
 ## 18. Action hierarchy
 
 将来のLiterature Detailにおける優先順位を次のように設計する。

@@ -820,6 +820,7 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("10. SQLiteバックアップ", outputs[0])
         self.assertIn("11. ChatGPT構造化JSON取込", outputs[0])
         self.assertIn("12. Evidence確認・管理", outputs[0])
+        self.assertIn("13. 複数文献比較", outputs[0])
         self.assertIn("0. 終了", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
@@ -836,7 +837,7 @@ class CliTestCase(unittest.TestCase):
 
     def test_invalid_empty_and_many_choices_loop_without_recursion(self) -> None:
         invalid_count = 1200
-        actions = ["", "invalid", *(["13"] * invalid_count), "0"]
+        actions = ["", "invalid", *(["14"] * invalid_count), "0"]
 
         _, feeder, outputs = self.run_with_actions(actions)
 
@@ -10708,7 +10709,7 @@ class CliTestCase(unittest.TestCase):
         invalid_count = 1200
         feeder = InputFeeder(
             [
-                "13",
+                "14",
                 "7",
                 "5",
                 "invalid",
@@ -12782,7 +12783,7 @@ class CliTestCase(unittest.TestCase):
                     self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
 
     def test_csv_submenu_contract_default_path_and_unset_search(self) -> None:
-        feeder = InputFeeder(["9", "3", "2", "1", "0", "13", "0"])
+        feeder = InputFeeder(["9", "3", "2", "1", "0", "14", "0"])
         outputs: list[str] = []
 
         with patch.object(
@@ -13814,7 +13815,7 @@ class CliTestCase(unittest.TestCase):
             any(item.startswith("バックアップエラー: ") for item in outputs)
         )
 
-    def test_literature_detail_main_menu_zero_through_twelve_contract(
+    def test_literature_detail_main_menu_zero_through_thirteen_contract(
         self,
     ) -> None:
         feeder = InputFeeder(
@@ -13831,6 +13832,7 @@ class CliTestCase(unittest.TestCase):
                 "10",
                 "11",
                 "12",
+                "13",
                 "0",
             ]
         )
@@ -13881,6 +13883,11 @@ class CliTestCase(unittest.TestCase):
                 "_run_evidence_management",
                 return_value=False,
             ) as evidence_managed,
+            patch.object(
+                cli_module,
+                "_run_comparison_management",
+                return_value=False,
+            ) as comparison_managed,
         ):
             result = run_cli(
                 self.connection,
@@ -13902,6 +13909,7 @@ class CliTestCase(unittest.TestCase):
             "10. SQLiteバックアップ",
             "11. ChatGPT構造化JSON取込",
             "12. Evidence確認・管理",
+            "13. 複数文献比較",
             "0. 終了",
         )
         for option in expected_options:
@@ -13945,6 +13953,12 @@ class CliTestCase(unittest.TestCase):
             outputs.append,
             project_root=None,
             pdf_opener=None,
+        )
+        comparison_managed.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
+            None,
         )
         self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 0)
         self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
@@ -15766,6 +15780,270 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("PDF page: 未登録", text)
         self.assertIn("Printed page: S12", text)
         self.assertNotIn("⌘⌥G", text)
+
+    def test_comparison_submenu_navigation_invalid_input_and_interrupts(self) -> None:
+        _, feeder, outputs = self.run_with_actions(
+            ["13", "invalid", "0", "0"]
+        )
+
+        for option in (
+            "1. 直前の検索結果から選択",
+            "2. Literature IDを指定",
+            "0. メインメニューへ戻る",
+        ):
+            self.assertIn(option, cli_module._COMPARISON_MENU)
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_COMPARISON_MENU_MESSAGE), 1
+        )
+        self.assertEqual(feeder.prompts.count("選択してください: "), 4)
+        self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+
+        for interruption in (EOFError("comparison EOF"), KeyboardInterrupt()):
+            with self.subTest(interruption=type(interruption).__name__):
+                _, _, interrupted_outputs = self.run_with_actions(
+                    ["13", interruption]
+                )
+                self.assertEqual(
+                    interrupted_outputs.count(cli_module._EXIT_MESSAGE), 1
+                )
+
+    def test_comparison_no_previous_search_and_manual_validation_errors(self) -> None:
+        first_id = self.add_record("Synthetic comparison validation A")
+        actions = [
+            "13",
+            "1",
+            "2",
+            "",
+            "2",
+            str(first_id),
+            "2",
+            f"{first_id},{first_id}",
+            "2",
+            f"{first_id},999999",
+            "2",
+            f"{first_id},１",
+            "0",
+            "0",
+        ]
+
+        _, _, outputs = self.run_with_actions(actions)
+        text = "\n".join(outputs)
+
+        self.assertIn(
+            cli_module._MISSING_COMPARISON_SEARCH_RESULTS_MESSAGE, outputs
+        )
+        self.assertGreaterEqual(text.count("比較エラー:"), 5)
+        self.assertIn("2件以上", text)
+        self.assertIn("重複", text)
+        self.assertIn("存在しません", text)
+        self.assertIn("ASCII数字", text)
+        self.assertNotIn("比較文献\n", text)
+
+    def test_comparison_reuses_last_search_for_subset_and_all_in_order(self) -> None:
+        first_id = self.add_record("Synthetic search comparison A")
+        second_id = self.add_record("Synthetic search comparison B")
+        third_id = self.add_record("Synthetic search comparison C")
+        actions = [
+            "2",
+            *([""] * len(_SEARCH_FIELDS)),
+            "13",
+            "1",
+            "4,1",
+            "1",
+            "3,1",
+            "1",
+            "all",
+            "0",
+            "0",
+        ]
+
+        with patch.object(
+            cli_module,
+            "build_comparison_matrix",
+            wraps=cli_module.build_comparison_matrix,
+        ) as built:
+            _, _, outputs = self.run_with_actions(actions)
+
+        self.assertEqual(
+            [call.args[1] for call in built.call_args_list],
+            [(third_id, first_id), (first_id, second_id, third_id)],
+        )
+        text = "\n".join(outputs)
+        for number, title in enumerate(
+            (
+                "Synthetic search comparison A",
+                "Synthetic search comparison B",
+                "Synthetic search comparison C",
+            ),
+            start=1,
+        ):
+            self.assertIn(f"選択番号: {number}\nTitle: {title}\nYear:", text)
+        self.assertEqual(text.count("比較文献"), 2)
+        self.assertIn("表示範囲外", text)
+
+    def test_comparison_manual_output_is_row_first_and_preserves_metadata(self) -> None:
+        first_id = self.add_record(
+            "Synthetic manual comparison A", publication_year=2024
+        )
+        second_id = self.add_record(
+            "Synthetic manual comparison B", publication_year=2025
+        )
+        first_entity = create_structured_entity(
+            self.connection, first_id, "method_body_condition", sort_order=2
+        )
+        first_field = create_structured_field(
+            self.connection,
+            first_entity,
+            "load",
+            content_role="source_fact",
+            value="90 N",
+            availability="reported",
+            verification="ai_unverified",
+        )
+        earlier_entity = create_structured_entity(
+            self.connection, first_id, "method_body_condition", sort_order=1
+        )
+        create_structured_field(
+            self.connection,
+            earlier_entity,
+            "load",
+            content_role="source_fact",
+            value="9.2 kg",
+            availability="reported",
+            verification="user_verified",
+        )
+        second_entity = create_structured_entity(
+            self.connection, second_id, "method_body_condition"
+        )
+        create_structured_field(
+            self.connection,
+            second_entity,
+            "load",
+            content_role="source_fact",
+            value=None,
+            availability="not_reported",
+        )
+        evidence_id = create_evidence_reference(
+            self.connection,
+            first_id,
+            section="Synthetic Methods",
+            verification="user_verified",
+        )
+        attach_evidence_to_field(self.connection, first_field, evidence_id)
+
+        before = self.structured_row_counts(self.connection)
+        _, _, outputs = self.run_with_actions(
+            ["13", "2", f"{second_id},{first_id}", "0", "0"]
+        )
+        text = "\n".join(outputs)
+
+        self.assertLess(
+            text.index("[1] Synthetic manual comparison B (2025)"),
+            text.index("[2] Synthetic manual comparison A (2024)"),
+        )
+        self.assertIn("Methods / Body Condition\n\nload", text)
+        self.assertIn("[1] not_reported", text)
+        self.assertIn("[2] ① 9.2 kg", text)
+        self.assertIn("② 90 N", text)
+        self.assertIn("field verification: ai_unverified", text)
+        self.assertIn("Evidence: 1", text)
+        self.assertIn("user_verified Evidence: 1/1", text)
+        self.assertEqual(self.structured_row_counts(self.connection), before)
+
+    def test_comparison_cli_outcomes_stay_as_separate_logical_units(self) -> None:
+        first_id = self.add_record("Synthetic Outcome comparison A")
+        second_id = self.add_record("Synthetic Outcome comparison B")
+        for literature_id, contexts in (
+            (first_id, ("Context A", "Context B")),
+            (second_id, ("Context C",)),
+        ):
+            for sort_order, context in enumerate(contexts):
+                outcome_id = create_structured_entity(
+                    self.connection,
+                    literature_id,
+                    "outcome",
+                    sort_order=sort_order,
+                )
+                for key, value in (
+                    ("name", "Same stored Outcome"),
+                    ("definition", f"Definition {context}"),
+                    ("calculation_method", f"Calculation {context}"),
+                    ("unit", "%"),
+                    ("context_condition", context),
+                ):
+                    create_structured_field(
+                        self.connection,
+                        outcome_id,
+                        key,
+                        content_role="source_fact",
+                        value=value,
+                        availability="reported",
+                    )
+                if context == "Context A":
+                    result_id = create_structured_entity(
+                        self.connection,
+                        literature_id,
+                        "result",
+                        parent_entity_id=outcome_id,
+                    )
+                    for key, value in (
+                        ("condition_or_comparison", "Stored condition"),
+                        ("result", 3.2),
+                        ("statistics", {"sem": 0.2}),
+                    ):
+                        create_structured_field(
+                            self.connection,
+                            result_id,
+                            key,
+                            content_role="source_fact",
+                            value=value,
+                            availability="reported",
+                        )
+
+        _, _, outputs = self.run_with_actions(
+            ["13", "2", f"{first_id},{second_id}", "0", "0"]
+        )
+        text = "\n".join(outputs)
+
+        self.assertEqual(text.count("name: Same stored Outcome"), 3)
+        self.assertIn("Outcome 1", text)
+        self.assertIn("Outcome 2", text)
+        self.assertIn("definition: Definition Context A", text)
+        self.assertIn("calculation_method: Calculation Context B", text)
+        self.assertIn("context_condition: Context C", text)
+        self.assertIn("condition_or_comparison: Stored condition", text)
+        self.assertIn("result: 3.2", text)
+        self.assertIn('statistics: {"sem": 0.2}', text)
+        for forbidden in (
+            "directly comparable",
+            "partially comparable",
+            "not directly comparable",
+            "needs review",
+        ):
+            self.assertNotIn(forbidden, text.lower())
+
+    def test_comparison_cli_preserves_active_transaction_and_search_state(self) -> None:
+        first_id = self.add_record("Synthetic transaction comparison A")
+        second_id = self.add_record("Synthetic transaction comparison B")
+        marker = self.connection.execute(
+            "INSERT INTO tags (name) VALUES (?)", ("pending-comparison-cli",)
+        )
+        before = self.table_snapshot()
+
+        _, _, outputs = self.run_with_actions(
+            ["13", "2", f"{second_id},{first_id}", "0", "0"]
+        )
+
+        self.assertIn("比較文献", "\n".join(outputs))
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(self.table_snapshot(), before)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT name FROM tags WHERE id = ?", (marker.lastrowid,)
+            ).fetchone()[0],
+            "pending-comparison-cli",
+        )
+        self.connection.rollback()
 
     def test_cli_creates_no_database_export_or_backup_artifacts(self) -> None:
         self.populate_search_records()

@@ -435,11 +435,15 @@ Scope:
 The full workflow is recorded in
 `docs/EVIDENCE_REFERENCE_WORKFLOW.md`.
 
-## Current Step
+## Additional Completed Phase 2 Step
 
 ### Phase 2-6: Original PDF Evidence Navigation
 
-Status: current step, in progress
+Status: completed and pushed
+
+Completion commit: `6c462358ef69a855ba5d975e742b4f4f88832fd3`
+
+Full regression at completion: 632 tests passed
 
 Scope:
 
@@ -459,20 +463,35 @@ Scope:
 The full workflow is recorded in
 `docs/ORIGINAL_PDF_EVIDENCE_NAVIGATION.md`.
 
+## Current Step
+
+### Phase 2-7: Multi-Literature Comparison Matrix
+
+Status: current step, in progress
+
+Scope:
+
+- select at least two unique existing Literature records
+- reuse the last search results through display selection numbers or `all`
+- provide strict ASCII comma-separated Literature ID fallback selection
+- preserve user selection order as comparison column order
+- build fixed-order Study and five-subgroup Methods matrix rows
+- distinguish unregistered fields from canonical availability states
+- preserve every same-type entity in `sort_order`, then ID order
+- present Outcomes and child Results as unaligned Literature-local logical units
+- keep field verification and Evidence verification counts separate
+- preserve active caller transactions without commit, rollback, or close
+- local single-user operation and zero additional cost
+- no schema change, comparability judgment, normalization, conversion, API,
+  network, cloud, GUI, Research Project, or dependency
+
+The full workflow is recorded in
+`docs/MULTI_LITERATURE_COMPARISON.md`.
+
 ## Phase 2 Planned Steps
 
 Phase 2 Steps must be performed in the following order. A later Step must not
 be implemented early without an approved roadmap change.
-
-### Phase 2-7: Multi-Literature Comparison Matrix
-
-Status: planned
-
-Includes:
-
-- multiple-literature selection
-- side-by-side structured fields
-- comparison centered on PT research Methods
 
 ### Phase 2-8: Outcome Comparability
 

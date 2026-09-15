@@ -8,6 +8,15 @@ from typing import Mapping, Optional
 
 from src.backup import create_database_backup
 from src.csv_export import export_literature_csv
+from src.comparison_matrix import (
+    ComparisonMatrix,
+    ComparisonMatrixError,
+    ComparisonRow,
+    ComparisonValue,
+    build_comparison_matrix,
+    parse_literature_id_input,
+    select_search_result_ids,
+)
 from src.duplicates import DuplicateCandidate, find_duplicate_candidates
 from src.evidence_review import (
     EVIDENCE_EDITABLE_FIELDS,
@@ -80,11 +89,12 @@ _MAIN_MENU = """理学療法文献ライブラリ
 10. SQLiteバックアップ
 11. ChatGPT構造化JSON取込
 12. Evidence確認・管理
+13. 複数文献比較
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
 _INVALID_MENU_MESSAGE = (
     "入力エラー: "
-    "0、1、2、3、4、5、6、7、8、9、10、11、12のいずれかを選択してください。"
+    "0、1、2、3、4、5、6、7、8、9、10、11、12、13のいずれかを選択してください。"
 )
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
@@ -146,6 +156,19 @@ _EVIDENCE_PDF_OPEN_CONFIRMATION_MENU = """1. 原著PDFを開く
 0. 中止"""
 _EVIDENCE_ACTIVE_TRANSACTION_MESSAGE = (
     "アクティブなトランザクション中はEvidenceを変更できません。"
+)
+
+_COMPARISON_MENU = """複数文献比較
+
+1. 直前の検索結果から選択
+2. Literature IDを指定
+0. メインメニューへ戻る"""
+_INVALID_COMPARISON_MENU_MESSAGE = (
+    "入力エラー: 0、1、2のいずれかを選択してください。"
+)
+_MISSING_COMPARISON_SEARCH_RESULTS_MESSAGE = (
+    "比較できる直前の検索結果がありません。"
+    "先に文献検索を実行してください。"
 )
 
 _CSV_EXPORT_MENU = """CSV出力
@@ -3127,6 +3150,219 @@ def _run_evidence_management(
             return True
 
 
+def _comparison_value_metadata(value: ComparisonValue, indent: str) -> list[str]:
+    return [
+        f"{indent}field verification: {value.verification}",
+        f"{indent}Evidence: {value.evidence_count}",
+        (
+            f"{indent}user_verified Evidence: "
+            f"{value.user_verified_evidence_count}/{value.evidence_count}"
+        ),
+    ]
+
+
+def _comparison_ordinal(number: int) -> str:
+    circled = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+    return circled[number - 1] if number <= len(circled) else f"({number})"
+
+
+def _format_comparison_row(row: ComparisonRow) -> list[str]:
+    lines = [row.field_key]
+    for column_number, cell in enumerate(row.cells, start=1):
+        if not cell.values:
+            lines.append(f"[{column_number}] 未登録")
+            continue
+        multiple = len(cell.values) > 1
+        for value_number, value in enumerate(cell.values, start=1):
+            prefix = f"[{column_number}] " if value_number == 1 else "    "
+            ordinal = (
+                f"{_comparison_ordinal(value_number)} " if multiple else ""
+            )
+            lines.append(f"{prefix}{ordinal}{value.display_text}")
+            lines.extend(_comparison_value_metadata(value, "    "))
+    return lines
+
+
+def _append_profile_field(
+    lines: list[str],
+    field_key: str,
+    value: Optional[ComparisonValue],
+    *,
+    indent: str,
+) -> None:
+    if value is None:
+        lines.append(f"{indent}{field_key}: 未登録")
+        return
+    lines.append(f"{indent}{field_key}: {value.display_text}")
+    lines.extend(_comparison_value_metadata(value, indent + "  "))
+
+
+def _format_comparison_matrix(matrix: ComparisonMatrix) -> str:
+    """Format the semantic matrix row-first while keeping Outcomes unaligned."""
+    lines = ["=" * 40, "比較文献"]
+    for number, literature in enumerate(matrix.literature_columns, start=1):
+        year = _display_value(literature.publication_year)
+        lines.append(f"[{number}] {literature.title} ({year})")
+    lines.extend(("=" * 40, "", "Study"))
+    if matrix.study_rows:
+        for row in matrix.study_rows:
+            lines.extend(("", *_format_comparison_row(row)))
+    else:
+        lines.append("比較対象の登録済みStudy fieldはありません。")
+
+    lines.extend(("", _RECORD_SEPARATOR, "", "Methods"))
+    for group in matrix.method_groups:
+        lines.extend(("", f"Methods / {group.name}"))
+        if group.rows:
+            for row in group.rows:
+                lines.extend(("", *_format_comparison_row(row)))
+        else:
+            lines.append("比較対象の登録済みfieldはありません。")
+
+    lines.extend(("", _RECORD_SEPARATOR, "", "Outcomes"))
+    for column_number, literature_outcomes in enumerate(
+        matrix.outcomes_by_literature, start=1
+    ):
+        literature = literature_outcomes.literature
+        year = _display_value(literature.publication_year)
+        lines.extend(("", f"[{column_number}] {literature.title} ({year})"))
+        if not literature_outcomes.outcomes:
+            lines.append("登録済みOutcomeはありません。")
+            continue
+        for outcome_number, outcome in enumerate(
+            literature_outcomes.outcomes, start=1
+        ):
+            lines.extend(
+                (
+                    "",
+                    f"Outcome {outcome_number}",
+                    f"entity verification: {outcome.entity_verification}",
+                    f"Evidence: {outcome.evidence_count}",
+                    (
+                        "user_verified Evidence: "
+                        f"{outcome.user_verified_evidence_count}/"
+                        f"{outcome.evidence_count}"
+                    ),
+                )
+            )
+            for field in outcome.fields:
+                _append_profile_field(
+                    lines,
+                    field.field_key,
+                    field.value,
+                    indent="",
+                )
+            lines.append("Results:")
+            if not outcome.results:
+                lines.append("  登録済みResultはありません。")
+            for result_number, result in enumerate(outcome.results, start=1):
+                lines.extend(
+                    (
+                        f"  Result {result_number}",
+                        f"    entity verification: {result.entity_verification}",
+                        f"    Evidence: {result.evidence_count}",
+                        (
+                            "    user_verified Evidence: "
+                            f"{result.user_verified_evidence_count}/"
+                            f"{result.evidence_count}"
+                        ),
+                    )
+                )
+                for field in result.fields:
+                    _append_profile_field(
+                        lines,
+                        field.field_key,
+                        field.value,
+                        indent="    ",
+                    )
+    return "\n".join(lines)
+
+
+def _load_last_search_choices(
+    connection: sqlite3.Connection,
+    search_result_ids: tuple[int, ...],
+) -> tuple[Literature, ...]:
+    choices: list[Literature] = []
+    for literature_id in search_result_ids:
+        literature = get_literature(connection, literature_id)
+        if literature is None:
+            raise ValueError(
+                "直前の検索結果に、現在は存在しないLiteratureが含まれています。"
+            )
+        choices.append(literature)
+    return tuple(choices)
+
+
+def _run_comparison_management(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+    search_result_ids: Optional[tuple[int, ...]],
+) -> bool:
+    """Select Literature and display a read-only comparison."""
+    while True:
+        output_func(_COMPARISON_MENU)
+        try:
+            choice = _read_input(input_func, _MENU_PROMPT).strip()
+        except (EOFError, KeyboardInterrupt):
+            return True
+        if choice == "0":
+            return False
+        if choice not in {"1", "2"}:
+            output_func(_INVALID_COMPARISON_MENU_MESSAGE)
+            continue
+
+        try:
+            if choice == "1":
+                if not search_result_ids:
+                    output_func(_MISSING_COMPARISON_SEARCH_RESULTS_MESSAGE)
+                    continue
+                search_choices = _load_last_search_choices(
+                    connection, search_result_ids
+                )
+                output_func("直前の検索結果:")
+                for number, literature in enumerate(search_choices, start=1):
+                    output_func(
+                        "\n".join(
+                            (
+                                f"選択番号: {number}",
+                                f"Title: {literature.title}",
+                                f"Year: {_display_value(literature.publication_year)}",
+                            )
+                        )
+                    )
+                    output_func(_RECORD_SEPARATOR)
+                try:
+                    raw_selection = _read_input(
+                        input_func,
+                        "選択番号（all またはカンマ区切り）: ",
+                    )
+                except (EOFError, KeyboardInterrupt):
+                    return True
+                literature_ids = select_search_result_ids(
+                    search_result_ids, raw_selection
+                )
+            else:
+                try:
+                    raw_ids = _read_input(
+                        input_func,
+                        "Literature ID（カンマ区切り）: ",
+                    )
+                except (EOFError, KeyboardInterrupt):
+                    return True
+                literature_ids = parse_literature_id_input(raw_ids)
+
+            matrix = build_comparison_matrix(connection, literature_ids)
+        except (ComparisonMatrixError, ValueError) as error:
+            output_func(f"比較エラー: {error}")
+            continue
+        except sqlite3.Error:
+            output_func(_DATABASE_ERROR_MESSAGE)
+            raise
+
+        output_func(_format_comparison_matrix(matrix))
+
+
 def _parse_json_file_path(raw_path: str) -> Path:
     """Parse one shell-style path without executing any shell command."""
     try:
@@ -3344,6 +3580,7 @@ def run_cli(
             "10",
             "11",
             "12",
+            "13",
         }:
             output_func(_INVALID_MENU_MESSAGE)
             continue
@@ -3440,6 +3677,14 @@ def run_cli(
             output_func,
             project_root=navigation_project_root,
             pdf_opener=pdf_opener,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None
+        elif choice == "13" and _run_comparison_management(
+            connection,
+            input_func,
+            output_func,
+            last_search_result_ids,
         ):
             output_func(_EXIT_MESSAGE)
             return None

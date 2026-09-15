@@ -8,10 +8,10 @@
 - Phase 1 completion assessment: GO
 - Phase 1 final regression: 504 tests passed
 - Current phase: Phase 2
-- Current step: Phase 2-6 Original PDF Evidence Navigation
+- Current step: Phase 2-7 Multi-Literature Comparison Matrix
 - Current step status: in progress
 
-Phase 2-0、Phase 2-1、Phase 2-2、Phase 2-3、Phase 2-4、Phase 2-5はcompleted and pushedである。Phase 2-5 completion commitは`982141ef14f315e05bec72e409ebcaa605d938b7`、completion時のfull regressionは613 tests passedである。Phase 2-6はEvidenceと`literature.pdf_path`を安全に接続し、明示確認後にローカル原著PDFを開き、locatorと手動page移動案内を表示する。Schema変更、PDF parsing、automatic page jump、UI scripting、network、API、cloud、server、external dependencyを導入しない。
+Phase 2-0、Phase 2-1、Phase 2-2、Phase 2-3、Phase 2-4、Phase 2-5、Phase 2-6はcompleted and pushedである。Phase 2-6 completion commitは`6c462358ef69a855ba5d975e742b4f4f88832fd3`、completion時のfull regressionは632 tests passedである。Phase 2-7は複数LiteratureのStudy / Methodsをfixed-order matrixとして横断表示し、Outcomeは文献別logical unitのまま保持する。Schema変更、comparability判断、normalization、conversion、network、API、cloud、server、external dependencyを導入しない。
 
 ## 2. Product Goal
 
@@ -464,7 +464,10 @@ Status: completed and pushed
 
 ### Phase 2-6: Original PDF Evidence Navigation
 
-Status: current step, in progress
+Status: completed and pushed
+
+- completion commit: `6c462358ef69a855ba5d975e742b4f4f88832fd3`
+- completion時full regression: 632 tests passed
 
 - same-Literature ownershipを確認して`pdf_path`とEvidenceを接続
 - `~`、absolute、application-project-root-relative pathの使用時validation
@@ -477,11 +480,19 @@ Status: current step, in progress
 
 ### Phase 2-7: Multi-Literature Comparison Matrix
 
-Status: planned
+Status: current step, in progress
 
-- 複数文献選択
-- 同一structured fieldsの横並び
-- PT研究Methods中心の比較
+- 最低2件のuniqueな既存Literatureを選択し、指定順を保持
+- 直前の検索結果を表示番号または`all`で再利用
+- ASCII数字のLiterature ID comma listをfallbackとして利用
+- StudyとMethods 5 subgroupsをfixed field orderでsemantic matrix化
+- 未登録と`not_reported`等のavailabilityを区別
+- 同じentity typeの複数値を`sort_order ASC, id ASC`ですべて保持
+- Outcomes / Resultsを文献別logical unitとして保持し、同名をalignしない
+- field verificationとEvidence / user-verified Evidence件数を分離表示
+- read-onlyでactive caller transactionを変更しない
+- schema変更、comparability判断、unit conversion、synonym normalizationなし
+- 詳細は[`MULTI_LITERATURE_COMPARISON.md`](MULTI_LITERATURE_COMPARISON.md)
 
 ### Phase 2-8: Outcome Comparability
 

@@ -762,6 +762,18 @@ Navigation target構築時とopen直前にLiterature / Evidence ownershipを確�
 
 PDF openはread-only DB featureであり、active caller transactionをcommit、rollback、closeしない。PDFを開いただけではEvidence、structured field / entity、Literature、AI summary、adoptionのverification/statusを変更しない。Schema versionは1のまま、external dependency、network、API、cloud、追加料金を導入しない。詳細は[`docs/ORIGINAL_PDF_EVIDENCE_NAVIGATION.md`](docs/ORIGINAL_PDF_EVIDENCE_NAVIGATION.md)を正式な参照先とする。
 
+### 20.16 Multi-Literature Comparison Matrix
+
+Phase 2-7では、最低2件の既存Literatureを明示選択し、保存済みStudyと5種類のMethodsをfixed field orderのsemantic matrixとして表示する。Main menu `13. 複数文献比較`から、直前の検索結果の表示番号またはASCII数字のLiterature IDリストを使用する。Duplicate、1件だけ、malformed input、unknown Literatureを拒否し、指定順をcomparison column orderとして保持する。1件でもunknownならpartial comparisonを行わない。
+
+Structured field未登録は`未登録`とし、fieldが存在する`not_reported`、`not_extracted`、`unclear`、`not_applicable`と区別する。全Literatureでfield自体が未登録のrowは既定で非表示とする。同一Literature内の同じentity typeは`sort_order ASC, id ASC`ですべて保持し、同じfieldの複数値をmergeまたはdiscardしない。
+
+OutcomesはLiteratureごとのlogical unitとして、name、definition、calculation method、unit、context、validation information、child Resultsを分離して表示する。同名Outcomeを同一文献内でも文献間でもmergeまたはalignしない。
+
+Reported fieldはfield verification、linked Evidence count、user-verified Evidence countを別metadataとして保持する。Field、entity、Evidence、Literatureのverificationを1つに統合しない。Comparisonは完全read-onlyであり、DB write、schema変更、caller transactionのcommit / rollback / closeを行わない。
+
+Phase 2-7は保存値の表示と横並びまでとする。Synonym normalization、unit conversion、numeric normalization、Outcome / method equivalence、comparability status、統計的解釈、ranking、recommendationを生成しない。Schema versionは1のまま、external dependency、network、API、cloud、追加料金を導入しない。詳細は[`docs/MULTI_LITERATURE_COMPARISON.md`](docs/MULTI_LITERATURE_COMPARISON.md)を正式な参照先とする。
+
 ---
 
 ## 21. 完了条件
@@ -812,6 +824,6 @@ Codexは以下を厳守する。
 
 Phase 1はSteps 0〜9がcompleted and pushed、completion assessmentはGO、final regressionは504 tests passedである。Phase 1の検証済みproduction behaviorをPhase 2以降の基盤として保護する。
 
-現在はPhase 2であり、Phase 2-0 Product direction / roadmap freeze、Phase 2-1 Literature Detail Information Architecture、Phase 2-2 ChatGPT Structured Import Contract v1、Phase 2-3 Structured Research Data Model、Phase 2-4 Structured Data Repository + Import Preview、Phase 2-5 Evidence Referenceはcompleted and pushedである。Phase 2-5 completion commitは`982141ef14f315e05bec72e409ebcaa605d938b7`、completion時のfull regressionは613 tests passedである。Current StepはPhase 2-6 Original PDF Evidence Navigation、Statusはcurrent step, in progressである。Phase 2-6はlocal single-user、zero additional cost、Evidenceから`Literature.pdf_path`へのownership-checked navigation、local PDF path validation、明示確認後のmacOS `open`、locator再表示と手動page移動案内を対象とし、schema変更、PDF parsing、automatic page jump、UI scripting、API、network、cloud、GUI、Comparison、Research Projectを実装しない。
+現在はPhase 2であり、Phase 2-0 Product direction / roadmap freeze、Phase 2-1 Literature Detail Information Architecture、Phase 2-2 ChatGPT Structured Import Contract v1、Phase 2-3 Structured Research Data Model、Phase 2-4 Structured Data Repository + Import Preview、Phase 2-5 Evidence Reference、Phase 2-6 Original PDF Evidence Navigationはcompleted and pushedである。Phase 2-6 completion commitは`6c462358ef69a855ba5d975e742b4f4f88832fd3`、completion時のfull regressionは632 tests passedである。Current StepはPhase 2-7 Multi-Literature Comparison Matrix、Statusはcurrent step, in progressである。Phase 2-7はlocal single-user、zero additional cost、最低2件のLiterature選択、Study / PT Methodsのfixed-order matrix、Literature別Outcome logical unit、availabilityとverification / Evidence summaryの区別、完全read-only behaviorを対象とする。Schema変更、comparability判断、unit conversion、synonym normalization、API、network、cloud、GUI、Research Projectを実装しない。
 
 仕様またはロードマップを変更する場合は、変更理由、既存仕様・データ・テスト・費用への影響を事前に説明し、必要なユーザー承認を得る。
