@@ -123,6 +123,7 @@ Testsはtemporary directory、temporary SQLite、synthetic Literature / structur
 ## 16. Boundary with Phase 2-8
 
 Phase 2-7は表示と横並びまでである。次の判断はPhase 2-8の責務であり、自動生成しない。
+Phase 2-8のpairwise manual assessment境界は[`OUTCOME_COMPARABILITY.md`](OUTCOME_COMPARABILITY.md)を参照する。
 
 - `directly comparable`
 - `partially comparable`

@@ -476,6 +476,38 @@ class CliTestCase(unittest.TestCase):
             Literature(title=title, **values),
         )
 
+    def create_comparability_outcome(
+        self,
+        literature_id: int,
+        *,
+        name: str = "Synthetic Outcome",
+        definition: str = "Synthetic definition",
+        context: str = "Synthetic context",
+        sort_order: int = 0,
+    ) -> int:
+        outcome_id = create_structured_entity(
+            self.connection,
+            literature_id,
+            "outcome",
+            sort_order=sort_order,
+        )
+        for key, value in (
+            ("name", name),
+            ("definition", definition),
+            ("calculation_method", "Stored calculation"),
+            ("unit", "%"),
+            ("context_condition", context),
+        ):
+            create_structured_field(
+                self.connection,
+                outcome_id,
+                key,
+                content_role="source_fact",
+                value=value,
+                availability="reported",
+            )
+        return outcome_id
+
     def write_structured_import_json(
         self,
         *,
@@ -15789,6 +15821,7 @@ class CliTestCase(unittest.TestCase):
         for option in (
             "1. 直前の検索結果から選択",
             "2. Literature IDを指定",
+            "3. Outcome比較可能性を確認",
             "0. メインメニューへ戻る",
         ):
             self.assertIn(option, cli_module._COMPARISON_MENU)
@@ -16021,6 +16054,223 @@ class CliTestCase(unittest.TestCase):
             "needs review",
         ):
             self.assertNotIn(forbidden, text.lower())
+
+    def test_outcome_comparability_cli_displays_profile_and_manual_status(self) -> None:
+        literature_a = self.add_record("Synthetic comparability A")
+        literature_b = self.add_record("Synthetic comparability B")
+        outcome_a = self.create_comparability_outcome(
+            literature_a,
+            name="Strain",
+            definition="Stored definition A",
+            context="Task A",
+        )
+        self.create_comparability_outcome(
+            literature_a,
+            name="Strain",
+            definition="Stored definition A2",
+            context="Task A2",
+            sort_order=2,
+        )
+        self.create_comparability_outcome(
+            literature_b,
+            name="Strain",
+            definition="Stored definition B",
+            context="Task B",
+        )
+        method = create_structured_entity(
+            self.connection,
+            literature_a,
+            "method_measurement_imaging",
+        )
+        method_field = create_structured_field(
+            self.connection,
+            method,
+            "imaging_modality",
+            content_role="source_fact",
+            value="Stored modality",
+            availability="reported",
+            verification="ai_unverified",
+        )
+        evidence = create_evidence_reference(
+            self.connection,
+            literature_a,
+            section="Synthetic section",
+            verification="user_verified",
+        )
+        attach_evidence_to_entity(self.connection, outcome_a, evidence)
+        attach_evidence_to_field(self.connection, method_field, evidence)
+        before = (self.table_snapshot(), self.structured_row_counts(self.connection))
+
+        _, _, outputs = self.run_with_actions(
+            [
+                "13",
+                "3",
+                str(literature_a),
+                "1",
+                str(literature_b),
+                "1",
+                "invalid",
+                "2",
+                "0",
+                "0",
+            ]
+        )
+        text = "\n".join(outputs)
+
+        self.assertEqual(text.count("Outcome 1\nname: Strain"), 2)
+        self.assertIn("Outcome 2\nname: Strain", text)
+        self.assertIn("definition概要: Stored definition A", text)
+        self.assertIn("context概要: context_condition=Task A", text)
+        for section in (
+            "1. Outcome Identity",
+            "2. Outcome Context",
+            "3. Measurement / Analysis Context",
+            "4. Validation / Evidence",
+        ):
+            self.assertIn(section, text)
+        self.assertIn("imaging_modality\n[A] Stored modality", text)
+        self.assertIn("field verification: ai_unverified", text)
+        self.assertIn("user_verified Evidence: 1/1", text)
+        self.assertIn(cli_module.COMPARABILITY_CAUTION, text)
+        self.assertIn(cli_module.METHODS_CONTEXT_CAUTION, text)
+        self.assertIn("現在の状態: needs review", text)
+        self.assertIn("ユーザー判断: partially comparable", text)
+        self.assertGreaterEqual(text.count(cli_module.NON_PERSISTENCE_NOTICE), 2)
+        self.assertEqual(
+            outputs.count(cli_module._INVALID_COMPARABILITY_STATUS_MESSAGE), 1
+        )
+        self.assertEqual(
+            (self.table_snapshot(), self.structured_row_counts(self.connection)),
+            before,
+        )
+
+    def test_outcome_comparability_cli_rejects_invalid_pair_and_outcome_states(self) -> None:
+        literature_a = self.add_record("Synthetic choice A")
+        literature_without_outcome = self.add_record("Synthetic empty B")
+        self.create_comparability_outcome(literature_a)
+        actions = [
+            "13",
+            "3",
+            str(literature_a),
+            "1",
+            str(literature_a),
+            "3",
+            str(literature_a),
+            "9",
+            "3",
+            str(literature_a),
+            "1",
+            str(literature_without_outcome),
+            "3",
+            "999999",
+            "0",
+            "0",
+        ]
+
+        _, _, outputs = self.run_with_actions(actions)
+        text = "\n".join(outputs)
+
+        self.assertIn("Literature AとBには別のLiterature", text)
+        self.assertIn("表示範囲外のOutcome選択番号", text)
+        self.assertIn("このLiteratureには登録済みOutcomeがありません。", text)
+        self.assertIn("Literature ID 999999 は存在しません", text)
+        self.assertNotIn("Outcome Comparability Profile", text)
+
+    def test_outcome_comparability_cli_status_cancel_does_not_show_user_judgment(self) -> None:
+        literature_a = self.add_record("Synthetic cancel A")
+        literature_b = self.add_record("Synthetic cancel B")
+        self.create_comparability_outcome(literature_a)
+        self.create_comparability_outcome(literature_b)
+
+        _, _, outputs = self.run_with_actions(
+            [
+                "13",
+                "3",
+                str(literature_a),
+                "1",
+                str(literature_b),
+                "1",
+                "0",
+                "0",
+                "0",
+            ]
+        )
+        text = "\n".join(outputs)
+
+        self.assertIn("現在の状態: needs review", text)
+        self.assertIn(cli_module.NON_PERSISTENCE_NOTICE, text)
+        self.assertNotIn("ユーザー判断:", text)
+
+    def test_outcome_comparability_cli_interrupts_safely(self) -> None:
+        literature_a = self.add_record("Synthetic interrupt A")
+        literature_b = self.add_record("Synthetic interrupt B")
+        self.create_comparability_outcome(literature_a)
+        self.create_comparability_outcome(literature_b)
+        interrupted_actions = (
+            ["13", "3", EOFError("A ID EOF")],
+            ["13", "3", str(literature_a), KeyboardInterrupt()],
+            ["13", "3", str(literature_a), "1", EOFError("B ID EOF")],
+            [
+                "13",
+                "3",
+                str(literature_a),
+                "1",
+                str(literature_b),
+                KeyboardInterrupt(),
+            ],
+            [
+                "13",
+                "3",
+                str(literature_a),
+                "1",
+                str(literature_b),
+                "1",
+                EOFError("status EOF"),
+            ],
+        )
+
+        for actions in interrupted_actions:
+            with self.subTest(length=len(actions)):
+                _, _, outputs = self.run_with_actions(actions)
+                self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
+
+    def test_outcome_comparability_cli_preserves_active_transaction(self) -> None:
+        literature_a = self.add_record("Synthetic active comparability A")
+        literature_b = self.add_record("Synthetic active comparability B")
+        self.create_comparability_outcome(literature_a)
+        self.create_comparability_outcome(literature_b)
+        marker = self.connection.execute(
+            "INSERT INTO tags (name) VALUES (?)", ("pending-outcome-comparison",)
+        )
+        before = (self.table_snapshot(), self.structured_row_counts(self.connection))
+
+        _, _, outputs = self.run_with_actions(
+            [
+                "13",
+                "3",
+                str(literature_a),
+                "1",
+                str(literature_b),
+                "1",
+                "1",
+                "0",
+                "0",
+            ]
+        )
+
+        self.assertIn("ユーザー判断: directly comparable", "\n".join(outputs))
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            (self.table_snapshot(), self.structured_row_counts(self.connection)),
+            before,
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT name FROM tags WHERE id = ?", (marker.lastrowid,)
+            ).fetchone()[0],
+            "pending-outcome-comparison",
+        )
+        self.connection.rollback()
 
     def test_comparison_cli_preserves_active_transaction_and_search_state(self) -> None:
         first_id = self.add_record("Synthetic transaction comparison A")

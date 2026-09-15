@@ -463,11 +463,15 @@ Scope:
 The full workflow is recorded in
 `docs/ORIGINAL_PDF_EVIDENCE_NAVIGATION.md`.
 
-## Current Step
+## Additional Completed Phase 2 Step
 
 ### Phase 2-7: Multi-Literature Comparison Matrix
 
-Status: current step, in progress
+Status: completed and pushed
+
+Completion commit: `2e5666ffb93f5d7c271827b73ebb450467ecbf61`
+
+Full regression at completion: 650 tests passed
 
 Scope:
 
@@ -488,21 +492,33 @@ Scope:
 The full workflow is recorded in
 `docs/MULTI_LITERATURE_COMPARISON.md`.
 
+## Current Step
+
+### Phase 2-8: Outcome Comparability
+
+Status: current step, in progress
+
+Scope:
+
+- compare one explicitly selected Outcome from each of two different Literature
+- preserve name, definition, calculation method, unit, and eight context fields
+- show all relevant Literature-level Methods without implying Outcome linkage
+- keep entity, field, and Evidence verification/count metadata separate
+- default to `needs review` without inferring comparability from stored values
+- accept only an explicit manual session status from the four-state vocabulary
+- state clearly that the manual status is not saved to the database
+- preserve active caller transactions without commit, rollback, or close
+- local single-user operation and zero additional cost
+- no schema change, persistence, automatic alignment, synonym matching, unit
+  conversion, ranking, recommendation, API, network, cloud, or dependency
+
+The full workflow is recorded in
+`docs/OUTCOME_COMPARABILITY.md`.
+
 ## Phase 2 Planned Steps
 
 Phase 2 Steps must be performed in the following order. A later Step must not
 be implemented early without an approved roadmap change.
-
-### Phase 2-8: Outcome Comparability
-
-Status: planned
-
-Includes:
-
-- separate Outcome name and definition comparison
-- calculation / imaging / algorithm / validation display
-- consideration of directly / partially / not directly / needs review states
-- no mandatory AI-based automatic judgment
 
 ### Phase 2-9: Research Project Model
 

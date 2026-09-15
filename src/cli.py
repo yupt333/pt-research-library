@@ -35,6 +35,20 @@ from src.evidence_review import (
     save_evidence_edit,
 )
 from src.models import EvidenceReference, Literature, Tag, UsageHistory
+from src.outcome_comparability import (
+    COMPARABILITY_CAUTION,
+    METHODS_CONTEXT_CAUTION,
+    NON_PERSISTENCE_NOTICE,
+    ComparabilityField,
+    LiteratureOutcomeChoices,
+    MethodsContext,
+    OutcomeChoice,
+    OutcomeComparabilityProfile,
+    build_outcome_comparability_profile,
+    list_outcome_choices,
+    select_outcome_choice,
+    validate_manual_comparability_status,
+)
 from src.pdf_navigation import (
     PDF_OPEN_FAILURE_MESSAGE,
     PdfNavigationError,
@@ -162,13 +176,28 @@ _COMPARISON_MENU = """複数文献比較
 
 1. 直前の検索結果から選択
 2. Literature IDを指定
+3. Outcome比較可能性を確認
 0. メインメニューへ戻る"""
 _INVALID_COMPARISON_MENU_MESSAGE = (
-    "入力エラー: 0、1、2のいずれかを選択してください。"
+    "入力エラー: 0、1、2、3のいずれかを選択してください。"
 )
 _MISSING_COMPARISON_SEARCH_RESULTS_MESSAGE = (
     "比較できる直前の検索結果がありません。"
     "先に文献検索を実行してください。"
+)
+_COMPARABILITY_STATUS_MENU = """1. directly comparable
+2. partially comparable
+3. not directly comparable
+4. needs review
+0. 戻る"""
+_COMPARABILITY_STATUS_BY_CHOICE = {
+    "1": "directly comparable",
+    "2": "partially comparable",
+    "3": "not directly comparable",
+    "4": "needs review",
+}
+_INVALID_COMPARABILITY_STATUS_MESSAGE = (
+    "入力エラー: 0、1、2、3、4のいずれかを選択してください。"
 )
 
 _CSV_EXPORT_MENU = """CSV出力
@@ -3293,6 +3322,288 @@ def _load_last_search_choices(
     return tuple(choices)
 
 
+def _format_outcome_choice(choice: OutcomeChoice) -> str:
+    return "\n".join(
+        (
+            f"Outcome {choice.selection_number}",
+            f"name: {choice.name_text}",
+            f"definition概要: {choice.definition_text}",
+            f"context概要: {choice.context_text}",
+        )
+    )
+
+
+def _display_outcome_choices(
+    choices: LiteratureOutcomeChoices,
+    output_func: Callable[[str], object],
+) -> None:
+    output_func(f"Literature title: {choices.literature.title}")
+    if not choices.outcomes:
+        output_func("このLiteratureには登録済みOutcomeがありません。")
+        return
+    for choice in choices.outcomes:
+        output_func(_format_outcome_choice(choice))
+        output_func(_RECORD_SEPARATOR)
+
+
+def _append_comparability_value(
+    lines: list[str],
+    side_label: str,
+    value: Optional[ComparisonValue],
+    *,
+    indent: str = "",
+) -> None:
+    if value is None:
+        lines.append(f"{indent}[{side_label}] 未登録")
+        return
+    lines.append(f"{indent}[{side_label}] {value.display_text}")
+    lines.extend(_comparison_value_metadata(value, indent + "  "))
+
+
+def _append_comparability_field(
+    lines: list[str], field: ComparabilityField
+) -> None:
+    lines.append(field.field_key)
+    _append_comparability_value(lines, "A", field.literature_a)
+    _append_comparability_value(lines, "B", field.literature_b)
+
+
+def _append_methods_context(
+    lines: list[str], context: MethodsContext
+) -> None:
+    lines.extend(("", f"Literature-level Methods / {context.name}"))
+    for field in context.fields:
+        lines.append(field.field_key)
+        for side_label, values in (
+            ("A", field.literature_a_values),
+            ("B", field.literature_b_values),
+        ):
+            if not values:
+                lines.append(f"[{side_label}] 未登録")
+                continue
+            multiple = len(values) > 1
+            for number, value in enumerate(values, start=1):
+                ordinal = f"{_comparison_ordinal(number)} " if multiple else ""
+                lines.append(f"[{side_label}] {ordinal}{value.display_text}")
+                lines.extend(_comparison_value_metadata(value, "  "))
+
+
+def _append_outcome_entity_metadata(
+    lines: list[str], side_label: str, outcome: object
+) -> None:
+    lines.extend(
+        (
+            f"[{side_label}] entity verification: {outcome.entity_verification}",
+            f"[{side_label}] entity Evidence: {outcome.evidence_count}",
+            (
+                f"[{side_label}] entity user_verified Evidence: "
+                f"{outcome.user_verified_evidence_count}/{outcome.evidence_count}"
+            ),
+        )
+    )
+
+
+def _append_outcome_results(
+    lines: list[str], side_label: str, outcome: object
+) -> None:
+    lines.append(f"[{side_label}] Results（参考情報）")
+    if not outcome.results:
+        lines.append("  登録済みResultはありません。")
+        return
+    for result_number, result in enumerate(outcome.results, start=1):
+        lines.extend(
+            (
+                f"  Result {result_number}",
+                f"    entity verification: {result.entity_verification}",
+                f"    Evidence: {result.evidence_count}",
+                (
+                    "    user_verified Evidence: "
+                    f"{result.user_verified_evidence_count}/{result.evidence_count}"
+                ),
+            )
+        )
+        for field in result.fields:
+            _append_profile_field(
+                lines, field.field_key, field.value, indent="    "
+            )
+
+
+def _format_outcome_comparability_profile(
+    profile: OutcomeComparabilityProfile,
+) -> str:
+    """Format stored facts without semantic matching or a system judgment."""
+    lines = [
+        "=" * 40,
+        "Outcome Comparability Profile",
+        f"[A] {profile.literature_a.title}",
+        f"[B] {profile.literature_b.title}",
+        COMPARABILITY_CAUTION,
+        "",
+        "1. Outcome Identity",
+    ]
+    for field in profile.identity:
+        _append_comparability_field(lines, field)
+
+    lines.extend(("", _RECORD_SEPARATOR, "", "2. Outcome Context"))
+    for field in profile.context:
+        _append_comparability_field(lines, field)
+
+    lines.extend(
+        (
+            "",
+            _RECORD_SEPARATOR,
+            "",
+            "3. Measurement / Analysis Context",
+            "Literature-level Methods context（Outcomeへの直接関連付けは未登録）",
+            METHODS_CONTEXT_CAUTION,
+        )
+    )
+    for context in profile.methods_context[:-1]:
+        _append_methods_context(lines, context)
+
+    lines.extend(("", _RECORD_SEPARATOR, "", "4. Validation / Evidence"))
+    lines.append("Outcome entity metadata（field metadataとは別）")
+    _append_outcome_entity_metadata(lines, "A", profile.outcome_a)
+    _append_outcome_entity_metadata(lines, "B", profile.outcome_b)
+    lines.append("Outcome field metadataは各fieldの保存値の直下に表示しています。")
+    _append_comparability_field(lines, profile.validation_information)
+    lines.append("Literature-level validation methods")
+    lines.append(METHODS_CONTEXT_CAUTION)
+    _append_methods_context(lines, profile.methods_context[-1])
+    lines.extend(
+        (
+            "",
+            "Result値・統計値から比較可能性を自動評価しません。",
+        )
+    )
+    _append_outcome_results(lines, "A", profile.outcome_a)
+    _append_outcome_results(lines, "B", profile.outcome_b)
+    lines.extend(("", f"現在の状態: {profile.default_status}"))
+    return "\n".join(lines)
+
+
+def _read_outcome_selection(
+    choices: LiteratureOutcomeChoices,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+    side_label: str,
+) -> tuple[Optional[int], bool]:
+    try:
+        raw_selection = _read_input(
+            input_func, f"Outcome {side_label} 選択番号（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return None, True
+    try:
+        selection = _required_positive_ascii_integer(
+            raw_selection, f"Outcome {side_label} 選択番号"
+        )
+        select_outcome_choice(choices.outcomes, selection)
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return None, False
+    return selection, False
+
+
+def _run_outcome_comparability(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Run one session-only, explicitly selected pairwise assessment."""
+    try:
+        raw_a_id = _read_input(
+            input_func, "Literature A ID（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+    try:
+        literature_a_id = _required_positive_ascii_integer(
+            raw_a_id, "Literature A ID"
+        )
+        choices_a = list_outcome_choices(connection, literature_a_id)
+    except (ComparisonMatrixError, ValueError) as error:
+        output_func(f"比較エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    _display_outcome_choices(choices_a, output_func)
+    if not choices_a.outcomes:
+        return False
+    outcome_a_selection, interrupted = _read_outcome_selection(
+        choices_a, input_func, output_func, "A"
+    )
+    if interrupted:
+        return True
+    if outcome_a_selection is None:
+        return False
+
+    try:
+        raw_b_id = _read_input(
+            input_func, "Literature B ID（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+    try:
+        literature_b_id = _required_positive_ascii_integer(
+            raw_b_id, "Literature B ID"
+        )
+        if literature_b_id == literature_a_id:
+            raise ValueError("Literature AとBには別のLiteratureを指定してください。")
+        choices_b = list_outcome_choices(connection, literature_b_id)
+    except (ComparisonMatrixError, ValueError) as error:
+        output_func(f"比較エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    _display_outcome_choices(choices_b, output_func)
+    if not choices_b.outcomes:
+        return False
+    outcome_b_selection, interrupted = _read_outcome_selection(
+        choices_b, input_func, output_func, "B"
+    )
+    if interrupted:
+        return True
+    if outcome_b_selection is None:
+        return False
+
+    try:
+        profile = build_outcome_comparability_profile(
+            connection,
+            literature_a_id,
+            outcome_a_selection,
+            literature_b_id,
+            outcome_b_selection,
+        )
+    except (ComparisonMatrixError, ValueError) as error:
+        output_func(f"比較エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    output_func(_format_outcome_comparability_profile(profile))
+    output_func(NON_PERSISTENCE_NOTICE)
+
+    while True:
+        output_func(_COMPARABILITY_STATUS_MENU)
+        try:
+            raw_status = _read_input(input_func, _MENU_PROMPT).strip()
+        except (EOFError, KeyboardInterrupt):
+            return True
+        if raw_status == "0":
+            return False
+        status = _COMPARABILITY_STATUS_BY_CHOICE.get(raw_status)
+        if status is None:
+            output_func(_INVALID_COMPARABILITY_STATUS_MESSAGE)
+            continue
+        assessment = validate_manual_comparability_status(status)
+        output_func(f"ユーザー判断: {assessment.status}")
+        output_func(NON_PERSISTENCE_NOTICE)
+        return False
+
+
 def _run_comparison_management(
     connection: sqlite3.Connection,
     input_func: Callable[[str], str],
@@ -3308,6 +3619,12 @@ def _run_comparison_management(
             return True
         if choice == "0":
             return False
+        if choice == "3":
+            if _run_outcome_comparability(
+                connection, input_func, output_func
+            ):
+                return True
+            continue
         if choice not in {"1", "2"}:
             output_func(_INVALID_COMPARISON_MENU_MESSAGE)
             continue

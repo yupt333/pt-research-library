@@ -480,7 +480,10 @@ Status: completed and pushed
 
 ### Phase 2-7: Multi-Literature Comparison Matrix
 
-Status: current step, in progress
+Status: completed and pushed
+
+- completion commit: `2e5666ffb93f5d7c271827b73ebb450467ecbf61`
+- completion時full regression: 650 tests passed
 
 - 最低2件のuniqueな既存Literatureを選択し、指定順を保持
 - 直前の検索結果を表示番号または`all`で再利用
@@ -496,12 +499,20 @@ Status: current step, in progress
 
 ### Phase 2-8: Outcome Comparability
 
-Status: planned
+Status: current step, in progress
 
-- Outcome nameとdefinitionを分離した比較
-- calculation / imaging / algorithm / validationを表示
-- directly / partially / not directly / needs reviewの概念導入を検討
-- AIによる自動判定は必須にしない
+- 別Literatureから1 Outcomeずつを表示番号で明示選択するpairwise比較
+- name、definition、calculation method、unit、8 context fieldsを分離表示
+- Literature-level Methodsを全entity保持し、Outcomeとの直接linkとは表示しない
+- entity / field verificationとEvidence件数を統合せず表示
+- defaultは未判断を意味する`needs review`
+- directly / partially / not directly / needs reviewは利用者が明示選択
+- manual statusは現在のCLI画面だけに表示し、DBへ永続化しない
+- automatic alignment、semantic similarity、synonym mapping、unit conversion、
+  ranking、recommendationなし
+- read-onlyでactive caller transactionを変更しない
+- schema変更、network、API、cloud、external dependencyなし
+- 詳細は[`OUTCOME_COMPARABILITY.md`](OUTCOME_COMPARABILITY.md)
 
 ### Phase 2-9: Research Project Model
 

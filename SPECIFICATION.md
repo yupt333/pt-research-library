@@ -774,6 +774,18 @@ Reported fieldはfield verification、linked Evidence count、user-verified Evid
 
 Phase 2-7は保存値の表示と横並びまでとする。Synonym normalization、unit conversion、numeric normalization、Outcome / method equivalence、comparability status、統計的解釈、ranking、recommendationを生成しない。Schema versionは1のまま、external dependency、network、API、cloud、追加料金を導入しない。詳細は[`docs/MULTI_LITERATURE_COMPARISON.md`](docs/MULTI_LITERATURE_COMPARISON.md)を正式な参照先とする。
 
+### 20.17 Outcome Comparability
+
+Phase 2-8では、異なる2件のLiteratureからOutcomeを1件ずつ1-based表示番号で明示選択し、pairwise Outcome Comparability Profileを表示する。同名Outcomeを自動選択、統合、alignmentせず、Outcome entityの`sort_order ASC, id ASC`による安定順序を維持する。Outcome 0件、unknown Literature、同一Literature、表示範囲外選択は明確に拒否する。
+
+Profileは`Outcome Identity`、`Outcome Context`、`Measurement / Analysis Context`、`Validation / Evidence`の4 sectionを持つ。Identityではname、definition、calculation method、unitを、Contextでは8種類の保存済みcontext fieldを左右別々に表示する。未登録と`reported`、`not_reported`、`not_extracted`、`unclear`、`not_applicable`を区別し、単位変換、数値正規化、semantic equivalence推測を行わない。
+
+MethodsはLiterature-level contextとして5 subgroupの全該当entityを保持する。現schemaにOutcome-Method direct linkがないため、選択Outcome固有の撮像・身体条件・task・analysis・validationであるとは断定せず、その注意を画面に固定表示する。Outcome entity verification、Outcome field verification、entity/fieldへ直接linkされたEvidence件数、user-verified Evidence件数、`validation_information`、Literature-level validation methodsは別情報として表示する。
+
+Comparability statusは`directly comparable`、`partially comparable`、`not directly comparable`、`needs review`の4値だけとする。初期状態は常に未判断を意味する`needs review`であり、同じname、definition、unit、数値、または欠損状態から自動変更しない。最初の3状態は利用者が明示選択した場合だけ「ユーザー判断」として現在のCLI画面に表示する。判断はDBへ保存せず、usage historyその他の既存tableへ流用しない。
+
+Phase 2-8は完全read-onlyであり、成功、empty state、validation error、manual status選択のいずれでもDB rowまたはschemaを変更せず、caller connectionのactive transactionをcommit、rollback、closeしない。Automatic Outcome alignment、AI similarity、fuzzy matching、synonym mapping、unit conversion、numerical tolerance、ranking、recommendation、adoption / verification変更を行わない。Schema versionは1のまま、external dependency、network、API、cloud、追加料金を導入しない。詳細は[`docs/OUTCOME_COMPARABILITY.md`](docs/OUTCOME_COMPARABILITY.md)を正式な参照先とする。
+
 ---
 
 ## 21. 完了条件
