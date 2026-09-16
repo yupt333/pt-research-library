@@ -8,10 +8,10 @@
 - Phase 1 completion assessment: GO
 - Phase 1 final regression: 504 tests passed
 - Current phase: Phase 2
-- Current step: Phase 2-7 Multi-Literature Comparison Matrix
+- Current step: Phase 2-9 Research Project Model
 - Current step status: in progress
 
-Phase 2-0、Phase 2-1、Phase 2-2、Phase 2-3、Phase 2-4、Phase 2-5、Phase 2-6はcompleted and pushedである。Phase 2-6 completion commitは`6c462358ef69a855ba5d975e742b4f4f88832fd3`、completion時のfull regressionは632 tests passedである。Phase 2-7は複数LiteratureのStudy / Methodsをfixed-order matrixとして横断表示し、Outcomeは文献別logical unitのまま保持する。Schema変更、comparability判断、normalization、conversion、network、API、cloud、server、external dependencyを導入しない。
+Phase 2-0からPhase 2-8まではcompleted and pushedである。Phase 2-8 completion commitは`96d165a3889a8221e4352c4e6932d2045d712f53`、completion時のfull regressionは665 tests passedである。Phase 2-9は独立Research Project、Literatureとのmany-to-many、Project-local Concept / unresolved question / next action、free-text protocol note、schema version 2へのadditive migrationを対象とする。`usage_history.project_name`の変更、Own Protocol comparison、network、API、cloud、server、external dependencyを導入しない。
 
 ## 2. Product Goal
 
@@ -499,7 +499,10 @@ Status: completed and pushed
 
 ### Phase 2-8: Outcome Comparability
 
-Status: current step, in progress
+Status: completed and pushed
+
+- completion commit: `96d165a3889a8221e4352c4e6932d2045d712f53`
+- completion時full regression: 665 tests passed
 
 - 別Literatureから1 Outcomeずつを表示番号で明示選択するpairwise比較
 - name、definition、calculation method、unit、8 context fieldsを分離表示
@@ -516,11 +519,16 @@ Status: current step, in progress
 
 ### Phase 2-9: Research Project Model
 
-Status: planned
+Status: current step, in progress
 
 - Project独立管理
 - Literatureとのmany-to-many
 - Concepts / objective / current status / unresolved issues / next action / protocol notes
+- schema version 2へのadditive migrationと事前backup
+- `usage_history.project_name`をfree-text履歴として維持
+- Project-local ConceptをLiterature Conceptと自動mergeしない
+- CLI main menu 14
+- 詳細は[`RESEARCH_PROJECT_MODEL.md`](RESEARCH_PROJECT_MODEL.md)
 
 ### Phase 2-10: Own Protocol vs Literature Comparison
 

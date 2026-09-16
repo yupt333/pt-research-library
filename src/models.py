@@ -76,6 +76,34 @@ class UsageHistory:
 
 
 @dataclass
+class ResearchProject:
+    """One user-owned research project, separate from usage history."""
+
+    name: str
+    id: Optional[int] = None
+    objective: Optional[str] = None
+    current_status: Optional[str] = None
+    protocol_note: Optional[str] = None
+    general_note: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@dataclass
+class ResearchProjectItem:
+    """One project-local concept, question, or next action."""
+
+    project_id: int
+    item_type: str
+    content: str
+    id: Optional[int] = None
+    note: Optional[str] = None
+    sort_order: int = 0
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@dataclass
 class StructuredEntity:
     """One canonical structured research-data entity."""
 

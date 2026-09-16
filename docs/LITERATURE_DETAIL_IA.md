@@ -84,7 +84,7 @@ Authors、Year、Journal、Publication typeの詳細ownershipはOverviewにあ�
 | Adoption status | 文献の採否判断 | Research Relevance。Headerはsummary mirror |
 | Rating | 利用者の重要度評価 | Research Relevance。Headerはsummary mirror |
 
-将来のHeader action候補は`Open Original PDF`、`Add to Comparison`、`Link to Research Project`である。Phase 2-1ではactionを実装しない。ComparisonとResearch Projectは未実装であり、それぞれPhase 2-7以降とPhase 2-9以降の責務である。
+将来のHeader action候補は`Open Original PDF`、`Add to Comparison`、`Link to Research Project`である。Phase 2-1ではactionを実装しない。Comparisonと独立Research Project modelは後続Stepで実装されたが、Literature Detail Headerからの統合actionはPhase 2-11の責務である。
 
 ## 6. Overview
 
@@ -299,7 +299,7 @@ Phase 1情報として次を確認可能にする。
 
 `general_note`のprimary ownershipはOverviewとし、Research Relevanceでは必要に応じて研究関連内容の存在または参照先を示す。同じ本文を不必要に複製しない。
 
-将来はlinked Research Projects、methodological relevance、clinical relevance、protocol relevance、limitations for own use、methodological cautions、comparison notesを扱える方向とする。Research Project modelはPhase 2-9の責務であり、Phase 2-1ではProject entityを設計しない。
+Linked Research ProjectsはPhase 2-9で独立entityとLiterature many-to-manyとして定義された。これは`usage_history.project_name`とは別であり、Project-local ConceptをLiterature Conceptへ自動mergeしない。Literature Detail内への統合表示・actionはPhase 2-11の責務とし、Phase 2-1のSection ownershipを変更しない。Phase 2-9の詳細は[`RESEARCH_PROJECT_MODEL.md`](RESEARCH_PROJECT_MODEL.md)を参照する。
 
 ## 12. Tags / Usage
 
@@ -416,7 +416,7 @@ Primary sectionは1箇所とする。Headerへの再掲や他Sectionからの参
 
 | Concept | Primary section | Display role |
 |---|---|---|
-| Linked Research Projects | Research Relevance | Future Project association。Phase 2-9までは未実装 |
+| Linked Research Projects | Research Relevance | Phase 2-9 Project association。Literature Detail統合表示はPhase 2-11へ委ねる |
 | Methodological relevance; Clinical relevance; Protocol relevance | Research Relevance | Relevance by decision type |
 | Limitations for own use; Methodological cautions | Research Relevance | Constraints on application |
 | Comparison notes | Research Relevance | User interpretation supporting future comparison |

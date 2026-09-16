@@ -27,6 +27,9 @@ CURRENT_TABLES = {
     "evidence_references",
     "structured_field_evidence",
     "structured_entity_evidence",
+    "research_projects",
+    "research_project_literature",
+    "research_project_items",
 }
 
 

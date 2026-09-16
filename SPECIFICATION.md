@@ -704,9 +704,9 @@ Phase 2-3では、Phase 1の4テーブルと既存データを変更せず、次
 - `structured_field_evidence`
 - `structured_entity_evidence`
 
-current structured schema versionは1とし、migration履歴は`schema_migrations`の`MAX(version)`で管理する。`PRAGMA user_version`はPhase 1でopaque valueとして扱われているためschema version管理に使用せず、fresh作成、legacy migration、再起動のいずれでも変更しない。
+Phase 2-3で導入したstructured schema migrationはversion 1であり、migration履歴は`schema_migrations`で管理する。Phase 2-9でcurrent schema versionは2へ進む。`PRAGMA user_version`はPhase 1でopaque valueとして扱われているためschema version管理に使用せず、fresh作成、legacy migration、再起動のいずれでも変更しない。
 
-既存Phase 1 databaseをmigrationする場合は、schema変更より先に既存のverified SQLite backupを必ず作成する。backup先が指定されない場合またはbackupが失敗した場合はmigrationを開始しない。migration 1は単一transaction内で追加テーブルとversion metadataを作成し、失敗時は全変更をrollbackする。fresh databaseはcurrent 10テーブルを一括作成し、migration backupを作成しない。version 1適用済みdatabaseは必須tableの存在を確認して変更せず、より新しいversionはdowngradeせず拒否し、version 1 metadataと必須tableが矛盾するdatabaseはsilent repairしない。
+既存Phase 1 databaseをmigrationする場合は、schema変更より先に既存のverified SQLite backupを必ず作成する。backup先が指定されない場合またはbackupが失敗した場合はmigrationを開始しない。migration 1は単一transaction内で追加テーブルとversion metadataを作成し、失敗時は全変更をrollbackする。Phase 2-3時点のfresh databaseはversion 1の10テーブルを一括作成し、migration backupを作成しない。version 1適用済みdatabaseは必須tableの存在を確認して変更せず、より新しいversionはdowngradeせず拒否し、version 1 metadataと必須tableが矛盾するdatabaseはsilent repairしない。
 
 `structured_entities`はStudy、5種類のMethods、Outcome、Result、Limitation、Concept、Research Relevanceを複数保持できるlogical unitである。同一文献内で同じ`entity_type`を複数作成でき、Outcome nameを一意にしない。Resultはparent必須とし、composite foreign keyにより同一Literatureのentityだけをparentにできる。
 
@@ -786,6 +786,16 @@ Comparability statusは`directly comparable`、`partially comparable`、`not dir
 
 Phase 2-8は完全read-onlyであり、成功、empty state、validation error、manual status選択のいずれでもDB rowまたはschemaを変更せず、caller connectionのactive transactionをcommit、rollback、closeしない。Automatic Outcome alignment、AI similarity、fuzzy matching、synonym mapping、unit conversion、numerical tolerance、ranking、recommendation、adoption / verification変更を行わない。Schema versionは1のまま、external dependency、network、API、cloud、追加料金を導入しない。詳細は[`docs/OUTCOME_COMPARABILITY.md`](docs/OUTCOME_COMPARABILITY.md)を正式な参照先とする。
 
+### 20.18 Research Project Model
+
+Phase 2-9では、`usage_history.project_name`を既存のfree-text使用履歴として変更せず、利用者自身の研究を表すResearch Projectを独立entityとして追加する。Current schema versionは2であり、version 1の全tableとdataを保持したまま、`research_projects`、`research_project_literature`、`research_project_items`の3 tableをadditiveに追加する。Fresh databaseはmigration history 1、2を記録し、`PRAGMA user_version`を変更しない。
+
+Projectはtrim済みでcase-insensitive uniqueなname、objective、free-text current status、free-text protocol note、general note、UTC timestampを持つ。Literatureとはmany-to-manyであり、Project削除ではlinkとProject-local itemだけをcascade deleteし、Literature、structured data、Evidence、tags、usage history、PDF、他Projectを保持する。
+
+Project itemは`concept`、`unresolved_question`、`next_action`の3 typeを持つ。Project ConceptはLiteratureの`structured_entities.entity_type = concept`とは別entityであり、自動merge、name-based link、backfillを行わない。`protocol_note`はPhase 2-9ではfree textだけとし、Own Protocol structured schemaとLiterature Methods comparisonはPhase 2-10へ委ねる。
+
+Version 1またはlegacy Phase 1 databaseはschema変更前に既存`create_database_backup()`でverified backupを1回作成する。Migration 2はatomicであり、failure時にpartial Project schemaまたはversion 2 metadataを残さない。Version/table/historyの不一致をsilent repairしない。Project repository write APIはactive caller transactionをcommit/rollbackせず拒否し、read APIはactive transactionでも使用できる。Main menu 1〜13を維持し、`14. 研究プロジェクト管理`を追加する。詳細は[`docs/RESEARCH_PROJECT_MODEL.md`](docs/RESEARCH_PROJECT_MODEL.md)を正式な参照先とする。
+
 ---
 
 ## 21. 完了条件
@@ -836,6 +846,6 @@ Codexは以下を厳守する。
 
 Phase 1はSteps 0〜9がcompleted and pushed、completion assessmentはGO、final regressionは504 tests passedである。Phase 1の検証済みproduction behaviorをPhase 2以降の基盤として保護する。
 
-現在はPhase 2であり、Phase 2-0 Product direction / roadmap freeze、Phase 2-1 Literature Detail Information Architecture、Phase 2-2 ChatGPT Structured Import Contract v1、Phase 2-3 Structured Research Data Model、Phase 2-4 Structured Data Repository + Import Preview、Phase 2-5 Evidence Reference、Phase 2-6 Original PDF Evidence Navigationはcompleted and pushedである。Phase 2-6 completion commitは`6c462358ef69a855ba5d975e742b4f4f88832fd3`、completion時のfull regressionは632 tests passedである。Current StepはPhase 2-7 Multi-Literature Comparison Matrix、Statusはcurrent step, in progressである。Phase 2-7はlocal single-user、zero additional cost、最低2件のLiterature選択、Study / PT Methodsのfixed-order matrix、Literature別Outcome logical unit、availabilityとverification / Evidence summaryの区別、完全read-only behaviorを対象とする。Schema変更、comparability判断、unit conversion、synonym normalization、API、network、cloud、GUI、Research Projectを実装しない。
+現在はPhase 2であり、Phase 2-0からPhase 2-8まではcompleted and pushedである。Phase 2-8 completion commitは`96d165a3889a8221e4352c4e6932d2045d712f53`、completion時のfull regressionは665 tests passedである。Current StepはPhase 2-9 Research Project Model、Statusはcurrent step, in progressである。Phase 2-9はlocal single-user、zero additional cost、独立Project CRUD、Literature many-to-many、Project-local Concepts / unresolved questions / next actions、free-text protocol note、schema version 2へのadditive migrationを対象とする。`usage_history.project_name`の意味変更、Project ConceptとLiterature Conceptの自動merge、Own Protocol structured comparison、API、network、cloud、GUIを実装しない。
 
 仕様またはロードマップを変更する場合は、変更理由、既存仕様・データ・テスト・費用への影響を事前に説明し、必要なユーザー承認を得る。

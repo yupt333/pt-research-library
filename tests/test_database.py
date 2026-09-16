@@ -25,7 +25,13 @@ STRUCTURED_TABLES = {
     "structured_field_evidence",
     "structured_entity_evidence",
 }
-CURRENT_TABLES = PHASE1_TABLES | STRUCTURED_TABLES
+PROJECT_TABLES = {
+    "research_projects",
+    "research_project_literature",
+    "research_project_items",
+}
+VERSION1_TABLES = PHASE1_TABLES | STRUCTURED_TABLES
+CURRENT_TABLES = VERSION1_TABLES | PROJECT_TABLES
 
 
 class DatabaseTestCase(unittest.TestCase):
@@ -192,6 +198,52 @@ class DatabaseTestCase(unittest.TestCase):
         finally:
             connection.close()
 
+    def create_version1_database(self) -> tuple[int, int, int]:
+        connection = connect_database(self.database_path)
+        try:
+            connection.executescript(
+                f"""
+                BEGIN;
+                {database_module._PHASE1_TABLES_SQL}
+                {database_module._STRUCTURED_TABLES_SQL}
+                INSERT INTO schema_migrations (version) VALUES (1);
+                COMMIT;
+                """
+            )
+            literature_id = self.add_literature(
+                connection, "Synthetic version 1 literature"
+            )
+            entity_id = self.add_entity(connection, literature_id)
+            field_id = self.add_field(connection, literature_id, entity_id)
+            evidence_id = self.add_evidence(connection, literature_id)
+            connection.execute(
+                """
+                INSERT INTO structured_field_evidence (
+                    literature_id, field_id, evidence_id
+                )
+                VALUES (?, ?, ?)
+                """,
+                (literature_id, field_id, evidence_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO usage_history (
+                    literature_id, usage_type, project_name
+                )
+                VALUES (?, ?, ?)
+                """,
+                (
+                    literature_id,
+                    "synthetic-version-1-use",
+                    "Preserved free-text project name",
+                ),
+            )
+            connection.execute("PRAGMA user_version = 902")
+            connection.commit()
+            return literature_id, entity_id, evidence_id
+        finally:
+            connection.close()
+
     @staticmethod
     def add_literature(
         connection: sqlite3.Connection,
@@ -304,14 +356,15 @@ class DatabaseTestCase(unittest.TestCase):
         migration_rows = connection.execute(
             "SELECT version, applied_at FROM schema_migrations"
         ).fetchall()
-        self.assertEqual(len(migration_rows), 1)
+        self.assertEqual(len(migration_rows), 2)
         self.assertEqual(
-            migration_rows[0]["version"],
-            database_module.CURRENT_SCHEMA_VERSION,
+            [row["version"] for row in migration_rows],
+            [1, database_module.CURRENT_SCHEMA_VERSION],
         )
-        applied_at = migration_rows[0]["applied_at"]
-        self.assertTrue(applied_at.endswith("Z"))
-        datetime.fromisoformat(applied_at.replace("Z", "+00:00"))
+        for migration_row in migration_rows:
+            applied_at = migration_row["applied_at"]
+            self.assertTrue(applied_at.endswith("Z"))
+            datetime.fromisoformat(applied_at.replace("Z", "+00:00"))
 
     def test_fresh_database_does_not_create_migration_backup(self) -> None:
         initialize_database(
@@ -414,7 +467,7 @@ class DatabaseTestCase(unittest.TestCase):
                     "SELECT version FROM schema_migrations ORDER BY version"
                 ).fetchall()
             ],
-            [(database_module.CURRENT_SCHEMA_VERSION,)],
+            [(1,), (database_module.CURRENT_SCHEMA_VERSION,)],
         )
         self.assertEqual(
             connection.execute("PRAGMA foreign_key_check").fetchall(),
@@ -488,7 +541,7 @@ class DatabaseTestCase(unittest.TestCase):
         )
         self.assertEqual(
             connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0],
-            1,
+            2,
         )
         self.assertEqual(list(self.backup_directory.iterdir()), backup_paths_before)
 
@@ -591,7 +644,7 @@ class DatabaseTestCase(unittest.TestCase):
                 applied_at TEXT NOT NULL
             );
             INSERT INTO schema_migrations (version, applied_at)
-            VALUES (2, '2026-08-23T00:00:00Z');
+            VALUES (3, '2026-08-23T00:00:00Z');
             CREATE TABLE synthetic_marker (
                 id INTEGER PRIMARY KEY,
                 value TEXT NOT NULL
@@ -650,7 +703,7 @@ class DatabaseTestCase(unittest.TestCase):
 
         with self.assertRaisesRegex(
             database_module.DatabaseSchemaError,
-            "current database.*必須table",
+            "version 1 database.*必須table",
         ):
             initialize_database(
                 self.database_path,
@@ -701,6 +754,307 @@ class DatabaseTestCase(unittest.TestCase):
             [(7,)],
         )
         self.assertEqual(list(self.backup_directory.iterdir()), [])
+
+    def test_clean_version1_migrates_to_version2_after_one_backup(self) -> None:
+        literature_id, entity_id, evidence_id = self.create_version1_database()
+        before_connection = connect_database(self.database_path)
+        before_phase1 = self.phase1_data_snapshot(before_connection)
+        before_user_version = before_connection.execute(
+            "PRAGMA user_version"
+        ).fetchone()[0]
+        before_connection.close()
+
+        initialize_database(
+            self.database_path,
+            migration_backup_directory=self.backup_directory,
+        )
+
+        backup_paths = list(self.backup_directory.glob("*.sqlite3"))
+        self.assertEqual(len(backup_paths), 1)
+        backup_connection = connect_database(backup_paths[0])
+        try:
+            self.assertEqual(self.table_names(backup_connection), VERSION1_TABLES)
+            self.assertEqual(
+                [
+                    row[0]
+                    for row in backup_connection.execute(
+                        "SELECT version FROM schema_migrations ORDER BY version"
+                    )
+                ],
+                [1],
+            )
+        finally:
+            backup_connection.close()
+
+        connection = connect_database(self.database_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(self.table_names(connection), CURRENT_TABLES)
+        self.assertEqual(self.phase1_data_snapshot(connection), before_phase1)
+        self.assertEqual(
+            connection.execute("PRAGMA user_version").fetchone()[0],
+            before_user_version,
+        )
+        self.assertEqual(
+            [
+                row[0]
+                for row in connection.execute(
+                    "SELECT version FROM schema_migrations ORDER BY version"
+                )
+            ],
+            [1, 2],
+        )
+        self.assertEqual(
+            connection.execute(
+                "SELECT id, literature_id FROM structured_entities"
+            ).fetchall()[0][0],
+            entity_id,
+        )
+        self.assertEqual(
+            [
+                tuple(row)
+                for row in connection.execute(
+                    """
+                    SELECT literature_id, evidence_id
+                    FROM structured_field_evidence
+                    """
+                )
+            ],
+            [(literature_id, evidence_id)],
+        )
+        self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+        self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
+
+    def test_version1_without_backup_directory_changes_nothing(self) -> None:
+        self.create_version1_database()
+        connection = connect_database(self.database_path)
+        before_schema = self.schema_snapshot(connection)
+        before_data = self.phase1_data_snapshot(connection)
+        connection.close()
+
+        with self.assertRaisesRegex(
+            database_module.DatabaseSchemaError,
+            "migration_backup_directory",
+        ):
+            initialize_database(self.database_path)
+
+        connection = connect_database(self.database_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(self.schema_snapshot(connection), before_schema)
+        self.assertEqual(self.phase1_data_snapshot(connection), before_data)
+        self.assertEqual(self.table_names(connection), VERSION1_TABLES)
+        self.assertEqual(
+            connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
+            1,
+        )
+
+    def test_migration2_failure_rolls_back_to_valid_version1(self) -> None:
+        self.create_version1_database()
+        connection = connect_database(self.database_path)
+        before_schema = self.schema_snapshot(connection)
+        before_data = self.phase1_data_snapshot(connection)
+        connection.close()
+        failing_migration = """
+        CREATE TABLE research_projects (id INTEGER PRIMARY KEY);
+        CREATE TABLE research_project_literature (project_id INTEGER);
+        INSERT INTO schema_migrations (version) VALUES (2);
+        CREATE TABLE broken_project_table (id INTEGER PRIMARY KEY,);
+        """
+
+        with patch.object(
+            database_module, "MIGRATION_2_SQL", failing_migration
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                initialize_database(
+                    self.database_path,
+                    migration_backup_directory=self.backup_directory,
+                )
+
+        self.assertEqual(len(list(self.backup_directory.glob("*.sqlite3"))), 1)
+        connection = connect_database(self.database_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(self.schema_snapshot(connection), before_schema)
+        self.assertEqual(self.phase1_data_snapshot(connection), before_data)
+        self.assertEqual(self.table_names(connection), VERSION1_TABLES)
+        self.assertEqual(
+            connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0],
+            1,
+        )
+
+    def test_legacy_migration2_failure_leaves_valid_version1(self) -> None:
+        self.create_legacy_database()
+        failing_migration = """
+        CREATE TABLE research_projects (id INTEGER PRIMARY KEY);
+        INSERT INTO schema_migrations (version) VALUES (2);
+        CREATE TABLE broken_project_table (id INTEGER PRIMARY KEY,);
+        """
+
+        with patch.object(
+            database_module, "MIGRATION_2_SQL", failing_migration
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                initialize_database(
+                    self.database_path,
+                    migration_backup_directory=self.backup_directory,
+                )
+
+        self.assertEqual(len(list(self.backup_directory.glob("*.sqlite3"))), 1)
+        connection = connect_database(self.database_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(self.table_names(connection), VERSION1_TABLES)
+        self.assertEqual(
+            [
+                row[0]
+                for row in connection.execute(
+                    "SELECT version FROM schema_migrations ORDER BY version"
+                )
+            ],
+            [1],
+        )
+        self.assertEqual(
+            connection.execute(
+                "SELECT title FROM literature WHERE id = 1"
+            ).fetchone()[0],
+            "Synthetic legacy literature",
+        )
+        self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+        self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
+
+    def test_current_version2_requires_complete_migration_history(self) -> None:
+        initialize_database(self.database_path)
+        connection = connect_database(self.database_path)
+        connection.execute("DELETE FROM schema_migrations WHERE version = 1")
+        connection.commit()
+        before = self.schema_snapshot(connection)
+        connection.close()
+
+        with self.assertRaisesRegex(
+            database_module.DatabaseSchemaError,
+            "schema_migrations履歴",
+        ):
+            initialize_database(
+                self.database_path,
+                migration_backup_directory=self.backup_directory,
+            )
+
+        connection = connect_database(self.database_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(self.schema_snapshot(connection), before)
+        self.assertEqual(list(self.backup_directory.iterdir()), [])
+
+    def test_version1_with_partial_project_schema_is_rejected(self) -> None:
+        self.create_version1_database()
+        connection = connect_database(self.database_path)
+        connection.execute(
+            "CREATE TABLE research_projects (id INTEGER PRIMARY KEY)"
+        )
+        connection.commit()
+        before = self.schema_snapshot(connection)
+        connection.close()
+
+        with self.assertRaisesRegex(
+            database_module.DatabaseSchemaError,
+            "version 1.*部分的",
+        ):
+            initialize_database(
+                self.database_path,
+                migration_backup_directory=self.backup_directory,
+            )
+
+        connection = connect_database(self.database_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(self.schema_snapshot(connection), before)
+        self.assertEqual(list(self.backup_directory.iterdir()), [])
+
+    def test_current_version2_missing_project_table_is_rejected(self) -> None:
+        initialize_database(self.database_path)
+        connection = connect_database(self.database_path)
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DROP TABLE research_project_items")
+        connection.commit()
+        before = self.schema_snapshot(connection)
+        connection.close()
+
+        with self.assertRaisesRegex(
+            database_module.DatabaseSchemaError,
+            "current database.*research_project_items",
+        ):
+            initialize_database(
+                self.database_path,
+                migration_backup_directory=self.backup_directory,
+            )
+
+        connection = connect_database(self.database_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(self.schema_snapshot(connection), before)
+        self.assertEqual(list(self.backup_directory.iterdir()), [])
+
+    def test_current_version2_reinitialize_creates_no_backup_or_change(self) -> None:
+        initialize_database(self.database_path)
+        connection = connect_database(self.database_path)
+        before = self.schema_snapshot(connection)
+        connection.close()
+
+        initialize_database(
+            self.database_path,
+            migration_backup_directory=self.backup_directory,
+        )
+
+        connection = connect_database(self.database_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(self.schema_snapshot(connection), before)
+        self.assertEqual(list(self.backup_directory.iterdir()), [])
+
+    def test_project_tables_have_required_foreign_keys_and_constraints(self) -> None:
+        connection = self.open_initialized_database()
+        project_id = connection.execute(
+            "INSERT INTO research_projects (name) VALUES (?)",
+            ("Synthetic project",),
+        ).lastrowid
+        literature_id = self.add_literature(connection, "Synthetic linked literature")
+        connection.execute(
+            """
+            INSERT INTO research_project_literature (project_id, literature_id)
+            VALUES (?, ?)
+            """,
+            (project_id, literature_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO research_project_items (
+                project_id, item_type, content, sort_order
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (project_id, "concept", "Synthetic concept", 0),
+        )
+        connection.commit()
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO research_projects (name) VALUES (?)",
+                ("synthetic PROJECT",),
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO research_project_items (
+                    project_id, item_type, content, sort_order
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (project_id, "invalid", "Invalid", 0),
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO research_project_items (
+                    project_id, item_type, content, sort_order
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (project_id, "concept", "Invalid order", -1),
+            )
+        connection.rollback()
+        self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+        self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
 
     def test_foreign_keys_are_enabled_for_each_connection(self) -> None:
         initialize_database(self.database_path)

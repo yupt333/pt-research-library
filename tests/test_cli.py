@@ -17,6 +17,15 @@ from src.cli import run_cli
 from src.database import connect_database, initialize_database
 from src.duplicates import DuplicateCandidate, find_duplicate_candidates
 from src.models import Literature, Tag, UsageHistory
+from src.project_repository import (
+    attach_literature_to_project,
+    create_project_item,
+    create_research_project,
+    get_research_project,
+    list_literature_for_project,
+    list_project_items,
+    list_research_projects,
+)
 from src.repository import (
     add_literature,
     attach_tag_to_literature,
@@ -853,6 +862,7 @@ class CliTestCase(unittest.TestCase):
         self.assertIn("11. ChatGPT構造化JSON取込", outputs[0])
         self.assertIn("12. Evidence確認・管理", outputs[0])
         self.assertIn("13. 複数文献比較", outputs[0])
+        self.assertIn("14. 研究プロジェクト管理", outputs[0])
         self.assertIn("0. 終了", outputs[0])
         self.assertEqual(outputs[-1], "CLIを終了します。")
         self.assertEqual(outputs.count("CLIを終了します。"), 1)
@@ -869,7 +879,7 @@ class CliTestCase(unittest.TestCase):
 
     def test_invalid_empty_and_many_choices_loop_without_recursion(self) -> None:
         invalid_count = 1200
-        actions = ["", "invalid", *(["14"] * invalid_count), "0"]
+        actions = ["", "invalid", *(["15"] * invalid_count), "0"]
 
         _, feeder, outputs = self.run_with_actions(actions)
 
@@ -10741,7 +10751,7 @@ class CliTestCase(unittest.TestCase):
         invalid_count = 1200
         feeder = InputFeeder(
             [
-                "14",
+                "15",
                 "7",
                 "5",
                 "invalid",
@@ -12815,7 +12825,7 @@ class CliTestCase(unittest.TestCase):
                     self.assertNotIn(cli_module._DATABASE_ERROR_MESSAGE, outputs)
 
     def test_csv_submenu_contract_default_path_and_unset_search(self) -> None:
-        feeder = InputFeeder(["9", "3", "2", "1", "0", "14", "0"])
+        feeder = InputFeeder(["9", "3", "2", "1", "0", "15", "0"])
         outputs: list[str] = []
 
         with patch.object(
@@ -13847,7 +13857,7 @@ class CliTestCase(unittest.TestCase):
             any(item.startswith("バックアップエラー: ") for item in outputs)
         )
 
-    def test_literature_detail_main_menu_zero_through_thirteen_contract(
+    def test_literature_detail_main_menu_zero_through_fourteen_contract(
         self,
     ) -> None:
         feeder = InputFeeder(
@@ -13865,6 +13875,7 @@ class CliTestCase(unittest.TestCase):
                 "11",
                 "12",
                 "13",
+                "14",
                 "0",
             ]
         )
@@ -13920,6 +13931,11 @@ class CliTestCase(unittest.TestCase):
                 "_run_comparison_management",
                 return_value=False,
             ) as comparison_managed,
+            patch.object(
+                cli_module,
+                "_run_project_management",
+                return_value=False,
+            ) as project_managed,
         ):
             result = run_cli(
                 self.connection,
@@ -13942,6 +13958,7 @@ class CliTestCase(unittest.TestCase):
             "11. ChatGPT構造化JSON取込",
             "12. Evidence確認・管理",
             "13. 複数文献比較",
+            "14. 研究プロジェクト管理",
             "0. 終了",
         )
         for option in expected_options:
@@ -13991,6 +14008,11 @@ class CliTestCase(unittest.TestCase):
             feeder,
             outputs.append,
             None,
+        )
+        project_managed.assert_called_once_with(
+            self.connection,
+            feeder,
+            outputs.append,
         )
         self.assertEqual(outputs.count(cli_module._INVALID_MENU_MESSAGE), 0)
         self.assertEqual(outputs.count(cli_module._EXIT_MESSAGE), 1)
@@ -16314,6 +16336,364 @@ class CliTestCase(unittest.TestCase):
                 for path in self.directory.iterdir()
             )
         )
+
+    def test_project_menu_list_and_detail_group_saved_data(self) -> None:
+        first_project = create_research_project(
+            self.connection,
+            "AHD研究",
+            "Synthetic objective",
+            "健常者データ収集中",
+            "Synthetic protocol",
+            "Synthetic project note",
+        )
+        create_research_project(self.connection, "Achilles project")
+        literature_id = self.add_record(
+            "Synthetic linked literature", publication_year=2025
+        )
+        attach_literature_to_project(
+            self.connection, first_project, literature_id
+        )
+        for item_type, content in (
+            ("concept", "AHD"),
+            ("unresolved_question", "Synthetic question"),
+            ("next_action", "Synthetic action"),
+        ):
+            create_project_item(
+                self.connection,
+                first_project,
+                item_type,
+                content,
+                "Synthetic item note",
+            )
+
+        _, _, outputs = self.run_with_actions(
+            ["14", "1", "2", str(first_project), "0", "0"]
+        )
+        output = "\n".join(outputs)
+        self.assertIn("研究プロジェクト管理", output)
+        self.assertLess(output.index("name: AHD研究"), output.index("name: Achilles project"))
+        self.assertIn("objective: Synthetic objective", output)
+        self.assertIn("current_status: 健常者データ収集中", output)
+        self.assertIn("protocol_note: Synthetic protocol", output)
+        self.assertIn("general_note: Synthetic project note", output)
+        self.assertIn("title: Synthetic linked literature", output)
+        self.assertIn("year: 2025", output)
+        self.assertIn("Project Concepts", output)
+        self.assertIn("Unresolved Questions", output)
+        self.assertIn("Next Actions", output)
+        self.assertNotIn("item ID", output)
+
+    def test_project_create_confirm_cancel_duplicate_and_optional_values(self) -> None:
+        _, _, outputs = self.run_with_actions(
+            [
+                "14",
+                "3",
+                "  AHD研究  ",
+                "Objective",
+                "Status",
+                "Protocol",
+                "Note",
+                "1",
+                "3",
+                "Cancelled",
+                "",
+                "",
+                "",
+                "",
+                "0",
+                "3",
+                "ahd研究",
+                "",
+                "",
+                "",
+                "",
+                "1",
+                "0",
+                "0",
+            ]
+        )
+        projects = list_research_projects(self.connection)
+        self.assertEqual([project.name for project in projects], ["AHD研究"])
+        self.assertEqual(projects[0].objective, "Objective")
+        self.assertNotIn("Cancelled", [project.name for project in projects])
+        output = "\n".join(outputs)
+        self.assertIn("Projectを作成しました。", output)
+        self.assertIn("Project作成を中止しました。", output)
+        self.assertIn("既に存在します", output)
+
+    def test_project_edit_confirm_cancel_and_same_value_are_safe(self) -> None:
+        project_id = create_research_project(
+            self.connection, "Before", current_status="Before status"
+        )
+        _, _, outputs = self.run_with_actions(
+            [
+                "14",
+                "4",
+                str(project_id),
+                "3",
+                "After status",
+                "0",
+                "4",
+                str(project_id),
+                "1",
+                "Before",
+                "1",
+                "4",
+                str(project_id),
+                "3",
+                "After status",
+                "1",
+                "0",
+                "0",
+            ]
+        )
+        project = get_research_project(self.connection, project_id)
+        assert project is not None
+        self.assertEqual(project.name, "Before")
+        self.assertEqual(project.current_status, "After status")
+        output = "\n".join(outputs)
+        self.assertIn("変更前: Before status", output)
+        self.assertIn("変更後: After status", output)
+        self.assertIn("Project編集を中止しました。", output)
+        self.assertIn("Projectを更新しました。", output)
+
+    def test_project_delete_two_stage_preserves_literature_and_research_data(
+        self,
+    ) -> None:
+        project_id = create_research_project(self.connection, "Delete target")
+        literature_id = self.add_record("Kept literature")
+        attach_literature_to_project(
+            self.connection, project_id, literature_id
+        )
+        create_project_item(
+            self.connection, project_id, "concept", "Delete concept"
+        )
+        entity_id = create_structured_entity(
+            self.connection, literature_id, "concept"
+        )
+        create_structured_field(
+            self.connection,
+            entity_id,
+            "name",
+            content_role="source_fact",
+            value="Kept concept",
+            availability="reported",
+        )
+        create_evidence_reference(
+            self.connection, literature_id, pdf_page=1
+        )
+        create_usage_history(
+            self.connection,
+            literature_id,
+            "synthetic-use",
+            project_name="Historical free-text label",
+        )
+        before_nonproject = {
+            table: [tuple(row) for row in self.connection.execute(f"SELECT * FROM {table}")]
+            for table in (
+                "literature",
+                "structured_entities",
+                "structured_fields",
+                "evidence_references",
+                "structured_field_evidence",
+                "structured_entity_evidence",
+                "tags",
+                "literature_tags",
+                "usage_history",
+            )
+        }
+
+        _, _, outputs = self.run_with_actions(
+            ["14", "5", str(project_id), "1", "999", str(project_id), "0", "0"]
+        )
+
+        self.assertIsNone(get_research_project(self.connection, project_id))
+        after_nonproject = {
+            table: [tuple(row) for row in self.connection.execute(f"SELECT * FROM {table}")]
+            for table in before_nonproject
+        }
+        self.assertEqual(after_nonproject, before_nonproject)
+        output = "\n".join(outputs)
+        for message in (
+            "linked Literature count: 1",
+            "Concept count: 1",
+            "Literature本体は削除されません。",
+            "structured dataは削除されません。",
+            "Evidenceは削除されません。",
+            "usage_historyは削除されません。",
+            "PDFは削除されません。",
+            "ProjectとProject専用link/itemだけ削除されます。",
+        ):
+            self.assertIn(message, output)
+        self.assertIn(
+            f"入力エラー: Project ID {project_id} または0", output
+        )
+
+    def test_project_attach_duplicate_and_detach_link_only(self) -> None:
+        project_id = create_research_project(self.connection, "Links")
+        literature_id = self.add_record("Linked literature")
+        _, _, attach_outputs = self.run_with_actions(
+            [
+                "14",
+                "6",
+                str(project_id),
+                str(literature_id),
+                "1",
+                "6",
+                str(project_id),
+                str(literature_id),
+                "1",
+                "0",
+                "0",
+            ]
+        )
+        linked = list_literature_for_project(self.connection, project_id)
+        assert linked is not None
+        self.assertEqual([record.id for record in linked], [literature_id])
+        self.assertIn("既に関連付けられています。", attach_outputs)
+
+        _, _, detach_outputs = self.run_with_actions(
+            ["14", "7", str(project_id), "1", "1", "0", "0"]
+        )
+        self.assertEqual(
+            list_literature_for_project(self.connection, project_id), []
+        )
+        self.assertIsNotNone(get_literature(self.connection, literature_id))
+        self.assertIn(
+            "解除するのはProjectとLiteratureのlinkだけです。",
+            detach_outputs,
+        )
+
+    def test_project_item_add_list_edit_and_delete_by_selection_number(self) -> None:
+        project_id = create_research_project(self.connection, "Items")
+        _, _, outputs = self.run_with_actions(
+            [
+                "14",
+                "8",
+                str(project_id),
+                "2",
+                "Concept",
+                "Concept note",
+                "1",
+                "3",
+                "Question",
+                "",
+                "1",
+                "4",
+                "Action",
+                "",
+                "1",
+                "1",
+                "5",
+                "1",
+                "1",
+                "Edited concept",
+                "1",
+                "6",
+                "2",
+                "1",
+                "0",
+                "0",
+                "0",
+            ]
+        )
+        items = list_project_items(self.connection, project_id)
+        assert items is not None
+        self.assertEqual(
+            [(item.item_type, item.content) for item in items],
+            [
+                ("concept", "Edited concept"),
+                ("next_action", "Action"),
+            ],
+        )
+        output = "\n".join(outputs)
+        self.assertIn("Project Concepts", output)
+        self.assertIn("Unresolved Questions", output)
+        self.assertIn("Next Actions", output)
+        self.assertIn("選択番号: 1", output)
+        self.assertIn("Project項目を更新しました。", output)
+        self.assertIn("Project項目を削除しました。", output)
+
+    def test_project_invalid_ids_menus_interrupts_and_missing_literature(self) -> None:
+        project_id = create_research_project(self.connection, "Validation")
+        _, _, outputs = self.run_with_actions(
+            [
+                "14",
+                "9",
+                "2",
+                "abc",
+                "6",
+                str(project_id),
+                "999",
+                "0",
+                "0",
+            ]
+        )
+        self.assertIn(cli_module._INVALID_PROJECT_MENU_MESSAGE, outputs)
+        output = "\n".join(outputs)
+        self.assertIn("Project IDは1以上のASCII数字", output)
+        self.assertIn("対象Literatureが見つかりません。", output)
+
+        for interruption in (EOFError(), KeyboardInterrupt()):
+            with self.subTest(interruption=type(interruption).__name__):
+                _, _, interrupt_outputs = self.run_with_actions(
+                    ["14", interruption]
+                )
+                self.assertEqual(
+                    interrupt_outputs.count(cli_module._EXIT_MESSAGE), 1
+                )
+
+    def test_project_cli_active_transaction_and_cancellations_write_nothing(
+        self,
+    ) -> None:
+        project_id = create_research_project(self.connection, "Kept")
+        literature_id = self.add_record("Kept literature")
+        marker = self.connection.execute(
+            "INSERT INTO tags (name) VALUES (?)", ("pending-project-cli",)
+        )
+        before_project_count = len(list_research_projects(self.connection))
+
+        _, _, outputs = self.run_with_actions(
+            ["14", "3", "0", "0"]
+        )
+
+        self.assertTrue(self.connection.in_transaction)
+        self.assertEqual(
+            len(list_research_projects(self.connection)), before_project_count
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT name FROM tags WHERE id = ?", (marker.lastrowid,)
+            ).fetchone()[0],
+            "pending-project-cli",
+        )
+        self.assertIn(cli_module._PROJECT_ACTIVE_TRANSACTION_MESSAGE, outputs)
+        self.connection.rollback()
+
+        _, _, cancel_outputs = self.run_with_actions(
+            [
+                "14",
+                "6",
+                str(project_id),
+                str(literature_id),
+                "0",
+                "8",
+                str(project_id),
+                "2",
+                "Cancelled item",
+                "",
+                "0",
+                "0",
+                "0",
+                "0",
+            ]
+        )
+        self.assertEqual(
+            list_literature_for_project(self.connection, project_id), []
+        )
+        self.assertEqual(list_project_items(self.connection, project_id), [])
+        self.assertIn("Literature関連付けを中止しました。", cancel_outputs)
+        self.assertIn("Project項目の追加を中止しました。", cancel_outputs)
 
 
 if __name__ == "__main__":

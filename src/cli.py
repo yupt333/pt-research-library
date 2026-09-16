@@ -34,7 +34,14 @@ from src.evidence_review import (
     list_structured_items_with_evidence,
     save_evidence_edit,
 )
-from src.models import EvidenceReference, Literature, Tag, UsageHistory
+from src.models import (
+    EvidenceReference,
+    Literature,
+    ResearchProject,
+    ResearchProjectItem,
+    Tag,
+    UsageHistory,
+)
 from src.outcome_comparability import (
     COMPARABILITY_CAUTION,
     METHODS_CONTEXT_CAUTION,
@@ -57,6 +64,21 @@ from src.pdf_navigation import (
     build_navigation_target,
     format_locator_summary,
     open_evidence_pdf,
+)
+from src.project_repository import (
+    attach_literature_to_project,
+    create_project_item,
+    create_research_project,
+    delete_project_item,
+    delete_research_project,
+    detach_literature_from_project,
+    get_research_project,
+    get_research_project_related_counts,
+    list_literature_for_project,
+    list_project_items,
+    list_research_projects,
+    update_project_item,
+    update_research_project,
 )
 from src.repository import (
     add_literature,
@@ -104,11 +126,12 @@ _MAIN_MENU = """理学療法文献ライブラリ
 11. ChatGPT構造化JSON取込
 12. Evidence確認・管理
 13. 複数文献比較
+14. 研究プロジェクト管理
 0. 終了"""
 _MENU_PROMPT = "選択してください: "
 _INVALID_MENU_MESSAGE = (
     "入力エラー: "
-    "0、1、2、3、4、5、6、7、8、9、10、11、12、13のいずれかを選択してください。"
+    "0、1、2、3、4、5、6、7、8、9、10、11、12、13、14のいずれかを選択してください。"
 )
 _EXIT_MESSAGE = "CLIを終了します。"
 _DATABASE_ERROR_MESSAGE = "データベースエラーが発生しました。"
@@ -199,6 +222,70 @@ _COMPARABILITY_STATUS_BY_CHOICE = {
 _INVALID_COMPARABILITY_STATUS_MESSAGE = (
     "入力エラー: 0、1、2、3、4のいずれかを選択してください。"
 )
+
+_PROJECT_MANAGEMENT_MENU = """研究プロジェクト管理
+
+1. Project一覧
+2. Project詳細
+3. Project作成
+4. Project編集
+5. Project削除
+6. Literatureを関連付け
+7. Literature関連を解除
+8. Project項目管理
+0. メインメニューへ戻る"""
+_INVALID_PROJECT_MENU_MESSAGE = (
+    "入力エラー: 0〜8のいずれかを選択してください。"
+)
+_PROJECT_ITEM_MANAGEMENT_MENU = """Project項目管理
+
+1. 項目一覧
+2. Concept追加
+3. 未解決課題追加
+4. Next Action追加
+5. 項目編集
+6. 項目削除
+0. Project管理へ戻る"""
+_INVALID_PROJECT_ITEM_MENU_MESSAGE = (
+    "入力エラー: 0〜6のいずれかを選択してください。"
+)
+_PROJECT_CONFIRMATION_MENU = """1. 保存
+0. 中止"""
+_PROJECT_EDIT_CONFIRMATION_MENU = """1. この内容で保存
+0. 中止"""
+_PROJECT_DELETE_CONFIRMATION_MENU = """1. 削除手続きを続ける
+0. 中止"""
+_PROJECT_ATTACH_CONFIRMATION_MENU = """1. 関連付け
+0. 中止"""
+_PROJECT_DETACH_CONFIRMATION_MENU = """1. 関連を解除
+0. 中止"""
+_PROJECT_ITEM_DELETE_CONFIRMATION_MENU = """1. 項目を削除
+0. 中止"""
+_PROJECT_ACTIVE_TRANSACTION_MESSAGE = (
+    "アクティブなトランザクション中は研究Projectを変更できません。"
+)
+_PROJECT_EDIT_FIELDS = (
+    "name",
+    "objective",
+    "current_status",
+    "protocol_note",
+    "general_note",
+)
+_PROJECT_EDIT_FIELD_MENU = """1. name
+2. objective
+3. current_status
+4. protocol_note
+5. general_note
+0. 編集を中止する"""
+_PROJECT_ITEM_EDIT_FIELDS = ("content", "note")
+_PROJECT_ITEM_EDIT_FIELD_MENU = """1. content
+2. note
+0. 編集を中止する"""
+_PROJECT_ITEM_TYPE_LABELS = {
+    "concept": "Project Concepts",
+    "unresolved_question": "Unresolved Questions",
+    "next_action": "Next Actions",
+}
 
 _CSV_EXPORT_MENU = """CSV出力
 
@@ -3680,6 +3767,872 @@ def _run_comparison_management(
         output_func(_format_comparison_matrix(matrix))
 
 
+def _format_research_project(project: ResearchProject) -> str:
+    """Format all user-visible Project fields in a stable order."""
+    fields = (
+        ("name", project.name),
+        ("objective", project.objective),
+        ("current_status", project.current_status),
+        ("protocol_note", project.protocol_note),
+        ("general_note", project.general_note),
+        ("created_at", project.created_at),
+        ("updated_at", project.updated_at),
+    )
+    return "\n".join(
+        f"{label}: {_display_value(value)}" for label, value in fields
+    )
+
+
+def _format_project_list_item(project: ResearchProject) -> str:
+    return "\n".join(
+        (
+            f"Project ID: {project.id}",
+            f"name: {project.name}",
+            f"current_status: {_display_value(project.current_status)}",
+        )
+    )
+
+
+def _format_project_item(
+    item: ResearchProjectItem, selection_number: int
+) -> str:
+    return "\n".join(
+        (
+            f"選択番号: {selection_number}",
+            f"content: {item.content}",
+            f"note: {_display_value(item.note)}",
+            f"sort_order: {item.sort_order}",
+        )
+    )
+
+
+def _display_project_items(
+    items: Sequence[ResearchProjectItem],
+    output_func: Callable[[str], object],
+) -> None:
+    selection_number = 1
+    for item_type in (
+        "concept",
+        "unresolved_question",
+        "next_action",
+    ):
+        output_func(_PROJECT_ITEM_TYPE_LABELS[item_type])
+        typed_items = [item for item in items if item.item_type == item_type]
+        if not typed_items:
+            output_func("登録されていません。")
+            continue
+        for item in typed_items:
+            output_func(_format_project_item(item, selection_number))
+            output_func(_RECORD_SEPARATOR)
+            selection_number += 1
+
+
+def _confirm_project_action(
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+    menu: str,
+) -> tuple[bool, bool]:
+    while True:
+        output_func(menu)
+        try:
+            choice = _read_input(input_func, _MENU_PROMPT).strip()
+        except (EOFError, KeyboardInterrupt):
+            return False, True
+        if choice == "0":
+            return False, False
+        if choice == "1":
+            return True, False
+        output_func(_INVALID_CONFIRMATION_MESSAGE)
+
+
+def _read_research_project(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> tuple[Optional[ResearchProject], bool]:
+    try:
+        raw_project_id = _read_input(
+            input_func, "Project ID（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return None, True
+    try:
+        project_id = _required_positive_ascii_integer(
+            raw_project_id, "Project ID"
+        )
+        project = get_research_project(connection, project_id)
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return None, False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if project is None:
+        output_func("対象Projectが見つかりません。")
+        return None, False
+    return project, False
+
+
+def _run_project_list(
+    connection: sqlite3.Connection,
+    output_func: Callable[[str], object],
+) -> None:
+    try:
+        projects = list_research_projects(connection)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if not projects:
+        output_func("登録されているProjectはありません。")
+        return
+    for project in projects:
+        output_func(_format_project_list_item(project))
+        output_func(_RECORD_SEPARATOR)
+
+
+def _run_project_detail(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    project, interrupted = _read_research_project(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if project is None:
+        return False
+    try:
+        literature = list_literature_for_project(connection, project.id)
+        items = list_project_items(connection, project.id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if literature is None or items is None:
+        output_func("Project情報の取得中に対象Projectが存在しなくなりました。")
+        return False
+
+    output_func("Project詳細:")
+    output_func(_format_research_project(project))
+    output_func("Linked Literature")
+    if not literature:
+        output_func("関連付けられたLiteratureはありません。")
+    else:
+        for number, record in enumerate(literature, start=1):
+            output_func(
+                "\n".join(
+                    (
+                        f"選択番号: {number}",
+                        f"title: {record.title}",
+                        f"year: {_display_value(record.publication_year)}",
+                    )
+                )
+            )
+            output_func(_RECORD_SEPARATOR)
+    _display_project_items(items, output_func)
+    return False
+
+
+def _run_project_create(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    raw_values: dict[str, str] = {}
+    prompts = (
+        ("name", "name（必須）: "),
+        ("objective", "objective（空欄で未登録）: "),
+        ("current_status", "current_status（空欄で未登録）: "),
+        ("protocol_note", "protocol_note（空欄で未登録）: "),
+        ("general_note", "general_note（空欄で未登録）: "),
+    )
+    for field_name, prompt in prompts:
+        try:
+            raw_values[field_name] = _read_input(input_func, prompt)
+        except (EOFError, KeyboardInterrupt):
+            return True
+    name = raw_values["name"].strip()
+    if not name:
+        output_func("入力エラー: Project nameは必須です。")
+        return False
+    values = {
+        field_name: _optional_unmodified_text(raw_values[field_name])
+        for field_name in _PROJECT_EDIT_FIELDS[1:]
+    }
+    output_func("Project作成内容を確認してください。")
+    output_func(f"name: {name}")
+    for field_name in _PROJECT_EDIT_FIELDS[1:]:
+        output_func(f"{field_name}: {_display_value(values[field_name])}")
+    confirmed, interrupted = _confirm_project_action(
+        input_func, output_func, _PROJECT_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Project作成を中止しました。")
+        return False
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    try:
+        project_id = create_research_project(
+            connection,
+            name,
+            values["objective"],
+            values["current_status"],
+            values["protocol_note"],
+            values["general_note"],
+        )
+    except ValueError as error:
+        output_func(f"Project作成エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    output_func("Projectを作成しました。")
+    output_func(f"Project ID: {project_id}")
+    output_func(f"name: {name}")
+    return False
+
+
+def _run_project_edit(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    project, interrupted = _read_research_project(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if project is None:
+        return False
+    output_func("現在のProject情報:")
+    output_func(_format_research_project(project))
+    output_func(_PROJECT_EDIT_FIELD_MENU)
+    try:
+        raw_choice = _read_input(input_func, _MENU_PROMPT).strip()
+    except (EOFError, KeyboardInterrupt):
+        return True
+    if raw_choice == "0":
+        output_func("Project編集を中止しました。")
+        return False
+    if raw_choice not in {"1", "2", "3", "4", "5"}:
+        output_func("入力エラー: 0〜5のいずれかを選択してください。")
+        return False
+    field_name = _PROJECT_EDIT_FIELDS[int(raw_choice) - 1]
+    try:
+        raw_value = _read_input(
+            input_func,
+            f"新しい{field_name}（{'必須' if field_name == 'name' else '空欄で未登録'}）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+    if field_name == "name":
+        new_value: object = raw_value.strip()
+        if not new_value:
+            output_func("入力エラー: Project nameは必須です。")
+            return False
+    else:
+        new_value = _optional_unmodified_text(raw_value)
+    output_func("Project変更内容を確認してください。")
+    output_func(f"name: {project.name}")
+    output_func(f"field: {field_name}")
+    output_func(f"変更前: {_display_value(getattr(project, field_name))}")
+    output_func(f"変更後: {_display_value(new_value)}")
+    confirmed, interrupted = _confirm_project_action(
+        input_func, output_func, _PROJECT_EDIT_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Project編集を中止しました。")
+        return False
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    try:
+        updated = update_research_project(
+            connection, project.id, {field_name: new_value}
+        )
+    except ValueError as error:
+        output_func(f"Project編集エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if not updated:
+        output_func("確認後に対象Projectが存在しなくなりました。")
+        return False
+    output_func("Projectを更新しました。")
+    return False
+
+
+def _run_project_delete(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    project, interrupted = _read_research_project(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if project is None:
+        return False
+    try:
+        counts = get_research_project_related_counts(connection, project.id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if counts is None:
+        output_func("確認中に対象Projectが存在しなくなりました。")
+        return False
+    output_func("Project削除対象と影響を確認してください。")
+    output_func(f"Project name: {project.name}")
+    output_func(f"linked Literature count: {counts['literature_count']}")
+    output_func(f"Concept count: {counts['concept_count']}")
+    output_func(
+        "Unresolved Question count: "
+        f"{counts['unresolved_question_count']}"
+    )
+    output_func(f"Next Action count: {counts['next_action_count']}")
+    output_func("Literature本体は削除されません。")
+    output_func("structured dataは削除されません。")
+    output_func("Evidenceは削除されません。")
+    output_func("usage_historyは削除されません。")
+    output_func("PDFは削除されません。")
+    output_func("ProjectとProject専用link/itemだけ削除されます。")
+    confirmed, interrupted = _confirm_project_action(
+        input_func, output_func, _PROJECT_DELETE_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Project削除を中止しました。")
+        return False
+    while True:
+        try:
+            raw_confirmed_id = _read_input(
+                input_func,
+                f"削除を確定するためProject ID {project.id} を再入力してください\n（0で中止）: ",
+            )
+        except (EOFError, KeyboardInterrupt):
+            return True
+        confirmed_id_text = raw_confirmed_id.strip()
+        if confirmed_id_text == "0":
+            output_func("Project削除を中止しました。")
+            return False
+        try:
+            confirmed_id = _required_positive_ascii_integer(
+                raw_confirmed_id, "Project ID"
+            )
+        except ValueError:
+            confirmed_id = None
+        if confirmed_id == project.id:
+            break
+        output_func(
+            f"入力エラー: Project ID {project.id} または0を入力してください。"
+        )
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    try:
+        deleted = delete_research_project(connection, project.id)
+    except ValueError as error:
+        output_func(f"Project削除エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if not deleted:
+        output_func("確認後に対象Projectが存在しなくなりました。")
+        return False
+    output_func("Projectを削除しました。")
+    output_func(f"Project name: {project.name}")
+    return False
+
+
+def _run_project_literature_attach(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    project, interrupted = _read_research_project(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if project is None:
+        return False
+    try:
+        raw_literature_id = _read_input(
+            input_func, "Literature ID（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+    try:
+        literature_id = _required_positive_ascii_integer(
+            raw_literature_id, "Literature ID"
+        )
+        literature = get_literature(connection, literature_id)
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if literature is None:
+        output_func("対象Literatureが見つかりません。")
+        return False
+    output_func("Literature関連付け内容を確認してください。")
+    output_func(f"Project name: {project.name}")
+    output_func(f"Literature title: {literature.title}")
+    confirmed, interrupted = _confirm_project_action(
+        input_func, output_func, _PROJECT_ATTACH_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Literature関連付けを中止しました。")
+        return False
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    try:
+        attached = attach_literature_to_project(
+            connection, project.id, literature.id
+        )
+    except ValueError as error:
+        output_func(f"Literature関連付けエラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if not attached:
+        output_func("既に関連付けられています。")
+        return False
+    output_func("LiteratureをProjectへ関連付けました。")
+    return False
+
+
+def _run_project_literature_detach(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    project, interrupted = _read_research_project(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if project is None:
+        return False
+    try:
+        literature = list_literature_for_project(connection, project.id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if literature is None:
+        output_func("確認中に対象Projectが存在しなくなりました。")
+        return False
+    if not literature:
+        output_func("このProjectには解除できるLiterature関連がありません。")
+        return False
+    output_func(f"Project name: {project.name}")
+    for number, record in enumerate(literature, start=1):
+        output_func(
+            f"選択番号: {number}\n"
+            f"title: {record.title}\n"
+            f"year: {_display_value(record.publication_year)}"
+        )
+        output_func(_RECORD_SEPARATOR)
+    try:
+        raw_selection = _read_input(
+            input_func, "Literature選択番号（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+    try:
+        selection = _required_positive_ascii_integer(
+            raw_selection, "Literature選択番号"
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return False
+    if selection > len(literature):
+        output_func("入力エラー: 表示されたLiterature選択番号を入力してください。")
+        return False
+    selected = literature[selection - 1]
+    output_func("解除するのはProjectとLiteratureのlinkだけです。")
+    output_func(f"Project name: {project.name}")
+    output_func(f"Literature title: {selected.title}")
+    confirmed, interrupted = _confirm_project_action(
+        input_func, output_func, _PROJECT_DETACH_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Literature関連解除を中止しました。")
+        return False
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    try:
+        detached = detach_literature_from_project(
+            connection, project.id, selected.id
+        )
+    except ValueError as error:
+        output_func(f"Literature関連解除エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if not detached:
+        output_func("確認後に対象のLiterature関連が存在しなくなりました。")
+        return False
+    output_func("Literature関連を解除しました。")
+    return False
+
+
+def _read_project_items_for_selection(
+    connection: sqlite3.Connection,
+    project: ResearchProject,
+    output_func: Callable[[str], object],
+) -> Optional[list[ResearchProjectItem]]:
+    try:
+        items = list_project_items(connection, project.id)
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if items is None:
+        output_func("対象Projectが存在しなくなりました。")
+        return None
+    _display_project_items(items, output_func)
+    return items
+
+
+def _run_project_item_list(
+    connection: sqlite3.Connection,
+    project: ResearchProject,
+    output_func: Callable[[str], object],
+) -> None:
+    output_func(f"Project name: {project.name}")
+    _read_project_items_for_selection(connection, project, output_func)
+
+
+def _run_project_item_add(
+    connection: sqlite3.Connection,
+    project: ResearchProject,
+    item_type: str,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    try:
+        content = _read_input(input_func, "content（必須）: ").strip()
+        raw_note = _read_input(input_func, "note（空欄で未登録）: ")
+    except (EOFError, KeyboardInterrupt):
+        return True
+    if not content:
+        output_func("入力エラー: contentは必須です。")
+        return False
+    note = _optional_unmodified_text(raw_note)
+    output_func("Project項目の追加内容を確認してください。")
+    output_func(f"Project name: {project.name}")
+    output_func(f"item_type: {item_type}")
+    output_func(f"content: {content}")
+    output_func(f"note: {_display_value(note)}")
+    confirmed, interrupted = _confirm_project_action(
+        input_func, output_func, _PROJECT_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Project項目の追加を中止しました。")
+        return False
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    try:
+        create_project_item(connection, project.id, item_type, content, note)
+    except ValueError as error:
+        output_func(f"Project項目追加エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    output_func("Project項目を追加しました。")
+    return False
+
+
+def _select_project_item(
+    connection: sqlite3.Connection,
+    project: ResearchProject,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> tuple[Optional[ResearchProjectItem], bool]:
+    items = _read_project_items_for_selection(
+        connection, project, output_func
+    )
+    if not items:
+        if items == []:
+            output_func("このProjectには選択できる項目がありません。")
+        return None, False
+    try:
+        raw_selection = _read_input(
+            input_func, "項目選択番号（ASCII数字）: "
+        )
+    except (EOFError, KeyboardInterrupt):
+        return None, True
+    try:
+        selection = _required_positive_ascii_integer(
+            raw_selection, "項目選択番号"
+        )
+    except ValueError as error:
+        output_func(f"入力エラー: {error}")
+        return None, False
+    if selection > len(items):
+        output_func("入力エラー: 表示された項目選択番号を入力してください。")
+        return None, False
+    return items[selection - 1], False
+
+
+def _run_project_item_edit(
+    connection: sqlite3.Connection,
+    project: ResearchProject,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    item, interrupted = _select_project_item(
+        connection, project, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if item is None:
+        return False
+    output_func(_PROJECT_ITEM_EDIT_FIELD_MENU)
+    try:
+        choice = _read_input(input_func, _MENU_PROMPT).strip()
+    except (EOFError, KeyboardInterrupt):
+        return True
+    if choice == "0":
+        output_func("Project項目編集を中止しました。")
+        return False
+    if choice not in {"1", "2"}:
+        output_func("入力エラー: 0、1、2のいずれかを選択してください。")
+        return False
+    field_name = _PROJECT_ITEM_EDIT_FIELDS[int(choice) - 1]
+    try:
+        raw_value = _read_input(
+            input_func,
+            f"新しい{field_name}（{'必須' if field_name == 'content' else '空欄で未登録'}）: ",
+        )
+    except (EOFError, KeyboardInterrupt):
+        return True
+    if field_name == "content":
+        new_value: object = raw_value.strip()
+        if not new_value:
+            output_func("入力エラー: contentは必須です。")
+            return False
+    else:
+        new_value = _optional_unmodified_text(raw_value)
+    output_func("Project項目の変更内容を確認してください。")
+    output_func(f"item_type: {item.item_type}")
+    output_func(f"変更前: {_display_value(getattr(item, field_name))}")
+    output_func(f"変更後: {_display_value(new_value)}")
+    confirmed, interrupted = _confirm_project_action(
+        input_func, output_func, _PROJECT_EDIT_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Project項目編集を中止しました。")
+        return False
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    try:
+        updated = update_project_item(
+            connection, item.id, {field_name: new_value}
+        )
+    except ValueError as error:
+        output_func(f"Project項目編集エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if not updated:
+        output_func("確認後に対象Project項目が存在しなくなりました。")
+        return False
+    output_func("Project項目を更新しました。")
+    return False
+
+
+def _run_project_item_delete(
+    connection: sqlite3.Connection,
+    project: ResearchProject,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    item, interrupted = _select_project_item(
+        connection, project, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if item is None:
+        return False
+    output_func("Project項目の削除内容を確認してください。")
+    output_func(f"item_type: {item.item_type}")
+    output_func(f"content: {item.content}")
+    output_func(f"note: {_display_value(item.note)}")
+    confirmed, interrupted = _confirm_project_action(
+        input_func, output_func, _PROJECT_ITEM_DELETE_CONFIRMATION_MENU
+    )
+    if interrupted:
+        return True
+    if not confirmed:
+        output_func("Project項目削除を中止しました。")
+        return False
+    if connection.in_transaction:
+        output_func(_PROJECT_ACTIVE_TRANSACTION_MESSAGE)
+        return False
+    try:
+        deleted = delete_project_item(connection, item.id)
+    except ValueError as error:
+        output_func(f"Project項目削除エラー: {error}")
+        return False
+    except sqlite3.Error:
+        output_func(_DATABASE_ERROR_MESSAGE)
+        raise
+    if not deleted:
+        output_func("確認後に対象Project項目が存在しなくなりました。")
+        return False
+    output_func("Project項目を削除しました。")
+    return False
+
+
+def _run_project_item_management(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    project, interrupted = _read_research_project(
+        connection, input_func, output_func
+    )
+    if interrupted:
+        return True
+    if project is None:
+        return False
+    while True:
+        output_func(_PROJECT_ITEM_MANAGEMENT_MENU)
+        try:
+            choice = _read_input(input_func, _MENU_PROMPT).strip()
+        except (EOFError, KeyboardInterrupt):
+            return True
+        if choice == "0":
+            return False
+        if choice not in {"1", "2", "3", "4", "5", "6"}:
+            output_func(_INVALID_PROJECT_ITEM_MENU_MESSAGE)
+            continue
+        if choice == "1":
+            _run_project_item_list(connection, project, output_func)
+        elif choice in {"2", "3", "4"}:
+            item_type = {
+                "2": "concept",
+                "3": "unresolved_question",
+                "4": "next_action",
+            }[choice]
+            if _run_project_item_add(
+                connection,
+                project,
+                item_type,
+                input_func,
+                output_func,
+            ):
+                return True
+        elif choice == "5" and _run_project_item_edit(
+            connection, project, input_func, output_func
+        ):
+            return True
+        elif choice == "6" and _run_project_item_delete(
+            connection, project, input_func, output_func
+        ):
+            return True
+
+
+def _run_project_management(
+    connection: sqlite3.Connection,
+    input_func: Callable[[str], str],
+    output_func: Callable[[str], object],
+) -> bool:
+    """Run the independent Research Project management submenu."""
+    while True:
+        output_func(_PROJECT_MANAGEMENT_MENU)
+        try:
+            choice = _read_input(input_func, _MENU_PROMPT).strip()
+        except (EOFError, KeyboardInterrupt):
+            return True
+        if choice == "0":
+            return False
+        if choice not in {"1", "2", "3", "4", "5", "6", "7", "8"}:
+            output_func(_INVALID_PROJECT_MENU_MESSAGE)
+            continue
+        if choice == "1":
+            _run_project_list(connection, output_func)
+        elif choice == "2" and _run_project_detail(
+            connection, input_func, output_func
+        ):
+            return True
+        elif choice == "3" and _run_project_create(
+            connection, input_func, output_func
+        ):
+            return True
+        elif choice == "4" and _run_project_edit(
+            connection, input_func, output_func
+        ):
+            return True
+        elif choice == "5" and _run_project_delete(
+            connection, input_func, output_func
+        ):
+            return True
+        elif choice == "6" and _run_project_literature_attach(
+            connection, input_func, output_func
+        ):
+            return True
+        elif choice == "7" and _run_project_literature_detach(
+            connection, input_func, output_func
+        ):
+            return True
+        elif choice == "8" and _run_project_item_management(
+            connection, input_func, output_func
+        ):
+            return True
+
+
 def _parse_json_file_path(raw_path: str) -> Path:
     """Parse one shell-style path without executing any shell command."""
     try:
@@ -3898,6 +4851,7 @@ def run_cli(
             "11",
             "12",
             "13",
+            "14",
         }:
             output_func(_INVALID_MENU_MESSAGE)
             continue
@@ -4002,6 +4956,13 @@ def run_cli(
             input_func,
             output_func,
             last_search_result_ids,
+        ):
+            output_func(_EXIT_MESSAGE)
+            return None
+        elif choice == "14" and _run_project_management(
+            connection,
+            input_func,
+            output_func,
         ):
             output_func(_EXIT_MESSAGE)
             return None

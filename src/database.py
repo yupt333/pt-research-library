@@ -9,7 +9,7 @@ from src.backup import create_database_backup
 
 DatabasePath = Union[str, Path]
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 _PHASE1_TABLE_NAMES = frozenset(
     {"literature", "tags", "literature_tags", "usage_history"}
@@ -24,7 +24,15 @@ _STRUCTURED_TABLE_NAMES = frozenset(
         "structured_entity_evidence",
     }
 )
-_CURRENT_TABLE_NAMES = _PHASE1_TABLE_NAMES | _STRUCTURED_TABLE_NAMES
+_VERSION1_TABLE_NAMES = _PHASE1_TABLE_NAMES | _STRUCTURED_TABLE_NAMES
+_PROJECT_TABLE_NAMES = frozenset(
+    {
+        "research_projects",
+        "research_project_literature",
+        "research_project_items",
+    }
+)
+_CURRENT_TABLE_NAMES = _VERSION1_TABLE_NAMES | _PROJECT_TABLE_NAMES
 
 
 class DatabaseSchemaError(RuntimeError):
@@ -272,6 +280,58 @@ CREATE TABLE IF NOT EXISTS structured_entity_evidence (
 """
 
 
+_PROJECT_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS research_projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE
+        CHECK (length(trim(name)) > 0),
+    objective TEXT,
+    current_status TEXT,
+    protocol_note TEXT,
+    general_note TEXT,
+    created_at TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS research_project_literature (
+    project_id INTEGER NOT NULL,
+    literature_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (project_id, literature_id),
+    FOREIGN KEY (project_id)
+        REFERENCES research_projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (literature_id)
+        REFERENCES literature(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS research_project_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    item_type TEXT NOT NULL
+        CHECK (
+            item_type IN (
+                'concept',
+                'unresolved_question',
+                'next_action'
+            )
+        ),
+    content TEXT NOT NULL CHECK (length(trim(content)) > 0),
+    note TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0
+        CHECK (typeof(sort_order) = 'integer' AND sort_order >= 0),
+    created_at TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    FOREIGN KEY (project_id)
+        REFERENCES research_projects(id) ON DELETE CASCADE
+);
+"""
+
+
 SCHEMA_SQL = f"""
 BEGIN;
 
@@ -281,6 +341,10 @@ BEGIN;
 
 INSERT INTO schema_migrations (version) VALUES (1);
 
+{_PROJECT_TABLES_SQL}
+
+INSERT INTO schema_migrations (version) VALUES (2);
+
 COMMIT;
 """
 
@@ -289,6 +353,13 @@ MIGRATION_1_SQL = f"""
 {_STRUCTURED_TABLES_SQL}
 
 INSERT INTO schema_migrations (version) VALUES (1);
+"""
+
+
+MIGRATION_2_SQL = f"""
+{_PROJECT_TABLES_SQL}
+
+INSERT INTO schema_migrations (version) VALUES (2);
 """
 
 
@@ -347,6 +418,26 @@ def _require_tables(
         )
 
 
+def _require_migration_history(
+    connection: sqlite3.Connection,
+    expected_versions: tuple[int, ...],
+    *,
+    database_kind: str,
+) -> None:
+    """Require complete ordered migration history, not only its maximum."""
+    versions = tuple(
+        row[0]
+        for row in connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall()
+    )
+    if versions != expected_versions:
+        raise DatabaseSchemaError(
+            f"{database_kind} databaseのschema_migrations履歴が不正です: "
+            f"expected {expected_versions!r}, found {versions!r}"
+        )
+
+
 def _rollback_without_hiding_error(connection: sqlite3.Connection) -> None:
     """Best-effort rollback used while preserving an original exception."""
     try:
@@ -371,13 +462,39 @@ def _apply_migration_1(connection: sqlite3.Connection) -> None:
         table_names = _user_table_names(connection)
         _require_tables(
             table_names,
-            _CURRENT_TABLE_NAMES,
-            database_kind="migrated",
+            _VERSION1_TABLE_NAMES,
+            database_kind="migration 1",
         )
-        if _migration_level(connection, table_names) != CURRENT_SCHEMA_VERSION:
+        if _migration_level(connection, table_names) != 1:
             raise DatabaseSchemaError(
                 "migration 1のversion metadataを確認できませんでした。"
             )
+        _require_migration_history(
+            connection, (1,), database_kind="migration 1"
+        )
+        connection.commit()
+    except BaseException:
+        _rollback_without_hiding_error(connection)
+        raise
+
+
+def _apply_migration_2(connection: sqlite3.Connection) -> None:
+    """Add the Phase 2-9 project schema in one rollback-safe transaction."""
+    try:
+        connection.executescript(f"BEGIN IMMEDIATE;\n{MIGRATION_2_SQL}")
+        table_names = _user_table_names(connection)
+        _require_tables(
+            table_names,
+            _CURRENT_TABLE_NAMES,
+            database_kind="migration 2",
+        )
+        if _migration_level(connection, table_names) != CURRENT_SCHEMA_VERSION:
+            raise DatabaseSchemaError(
+                "migration 2のversion metadataを確認できませんでした。"
+            )
+        _require_migration_history(
+            connection, (1, 2), database_kind="migration 2"
+        )
         connection.commit()
     except BaseException:
         _rollback_without_hiding_error(connection)
@@ -411,20 +528,55 @@ def initialize_database(
                 _CURRENT_TABLE_NAMES,
                 database_kind="current",
             )
+            _require_migration_history(
+                connection, (1, 2), database_kind="current"
+            )
             return
 
-        _require_tables(
-            table_names,
-            _PHASE1_TABLE_NAMES,
-            database_kind="legacy Phase 1",
-        )
+        if migration_level == 1:
+            _require_tables(
+                table_names,
+                _VERSION1_TABLE_NAMES,
+                database_kind="version 1",
+            )
+            _require_migration_history(
+                connection, (1,), database_kind="version 1"
+            )
+            unexpected_project_tables = sorted(
+                table_names & _PROJECT_TABLE_NAMES
+            )
+            if unexpected_project_tables:
+                raise DatabaseSchemaError(
+                    "version 1 databaseにversion 2 project tableが"
+                    "部分的に存在します: "
+                    + ", ".join(unexpected_project_tables)
+                )
+        else:
+            _require_tables(
+                table_names,
+                _PHASE1_TABLE_NAMES,
+                database_kind="legacy Phase 1",
+            )
+            unexpected_migration_tables = sorted(
+                table_names
+                & (_STRUCTURED_TABLE_NAMES | _PROJECT_TABLE_NAMES)
+            )
+            if unexpected_migration_tables:
+                raise DatabaseSchemaError(
+                    "legacy Phase 1 databaseにmigration metadataまたは"
+                    "追加tableが部分的に存在します: "
+                    + ", ".join(unexpected_migration_tables)
+                )
+
         if migration_backup_directory is None:
             raise DatabaseSchemaError(
-                "legacy Phase 1 database migration requires "
+                "database migration requires "
                 "migration_backup_directory; schema was not changed."
             )
 
         create_database_backup(connection, migration_backup_directory)
-        _apply_migration_1(connection)
+        if migration_level == 0:
+            _apply_migration_1(connection)
+        _apply_migration_2(connection)
     finally:
         connection.close()

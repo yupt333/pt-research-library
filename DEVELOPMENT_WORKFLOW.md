@@ -492,11 +492,15 @@ Scope:
 The full workflow is recorded in
 `docs/MULTI_LITERATURE_COMPARISON.md`.
 
-## Current Step
+## Additional Completed Phase 2 Step
 
 ### Phase 2-8: Outcome Comparability
 
-Status: current step, in progress
+Status: completed and pushed
+
+Completion commit: `96d165a3889a8221e4352c4e6932d2045d712f53`
+
+Full regression at completion: 665 tests passed
 
 Scope:
 
@@ -515,14 +519,14 @@ Scope:
 The full workflow is recorded in
 `docs/OUTCOME_COMPARABILITY.md`.
 
-## Phase 2 Planned Steps
+## Current and Planned Phase 2 Steps
 
 Phase 2 Steps must be performed in the following order. A later Step must not
 be implemented early without an approved roadmap change.
 
 ### Phase 2-9: Research Project Model
 
-Status: planned
+Status: current step, in progress
 
 Includes:
 
@@ -530,6 +534,15 @@ Includes:
 - many-to-many Literature association
 - Concepts / objective / current status / unresolved issues / next action /
   protocol notes
+- additive schema version 2 with mandatory migration backup
+- Project-local Concepts kept separate from Literature Concepts
+- `usage_history.project_name` preserved as historical free text
+- CLI main menu 14
+- local single-user operation and zero additional cost
+- no Own Protocol structured comparison, API, network, cloud, or dependency
+
+The full model is recorded in
+`docs/RESEARCH_PROJECT_MODEL.md`.
 
 ### Phase 2-10: Own Protocol vs Literature Comparison
 
